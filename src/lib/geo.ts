@@ -126,6 +126,43 @@ export function simplify(points: XY[], tolerance: number): XY[] {
   return out;
 }
 
+/**
+ * 꿍은 모서리(집·번개 같은 직선 도형)가 스플라인 때문에 둥그렇게 뭉개지지 않도록,
+ * 모서리 바로 앞뒤에 짧은 점을 끼워 넣어 회전을 살린다. 진행 방향 변화가 turnDeg 이상인 점이 대상.
+ */
+export function sharpenTurns(path: XY[], turnDeg = 35, eps = 0.35): XY[] {
+  if (path.length < 3) return path.slice();
+  const out: XY[] = [path[0]];
+  for (let i = 1; i < path.length - 1; i++) {
+    const a = path[i - 1];
+    const b = path[i];
+    const c = path[i + 1];
+    const v1x = b.x - a.x;
+    const v1y = b.y - a.y;
+    const v2x = c.x - b.x;
+    const v2y = c.y - b.y;
+    const l1 = Math.hypot(v1x, v1y);
+    const l2 = Math.hypot(v2x, v2y);
+    if (l1 === 0 || l2 === 0) {
+      out.push(b);
+      continue;
+    }
+    const cos = (v1x * v2x + v1y * v2y) / (l1 * l2);
+    const turn = (Math.acos(Math.max(-1, Math.min(1, cos))) * 180) / Math.PI;
+    if (turn > turnDeg) {
+      const e1 = Math.min(eps, l1 * 0.25);
+      const e2 = Math.min(eps, l2 * 0.25);
+      out.push({ x: b.x - (v1x / l1) * e1, y: b.y - (v1y / l1) * e1 });
+      out.push(b);
+      out.push({ x: b.x + (v2x / l2) * e2, y: b.y + (v2y / l2) * e2 });
+    } else {
+      out.push(b);
+    }
+  }
+  out.push(path[path.length - 1]);
+  return out;
+}
+
 /** Catmull–Rom 스플라인으로 점 사이를 부드럽게 잇는다. */
 export function catmullRom(points: XY[], samplesPerSeg = 8): XY[] {
   if (points.length < 2) return points.slice();
@@ -169,7 +206,8 @@ export function smoothGeometry(
   for (const seg of splitSegments(points)) {
     const xy = seg.map((p) => toXY(p, org));
     const simplified = simplify(xy, tolerance);
-    const smooth = catmullRom(simplified, 8);
+    const sharpened = sharpenTurns(simplified);
+    const smooth = catmullRom(sharpened, 8);
     if (smooth.length >= 2) segments.push(smooth);
     else if (smooth.length === 1) segments.push([smooth[0], { ...smooth[0] }]);
   }

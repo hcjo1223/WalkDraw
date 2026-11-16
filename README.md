@@ -35,6 +35,17 @@ npm run build:single  # dist-single/index.html (CSS·JS 인라인 단일 파일)
 > GPS는 HTTPS 또는 localhost에서만 동작합니다. 집 안에서는 **시뮬레이션 모드**를 켜고 지도를 눌러 그리면 됩니다.
 > iPhone Safari: 공유 → 홈 화면에 추가하면 전체 화면 앱처럼 열립니다.
 
+## 저장소 만들고 올리기 (처음 한 번)
+
+```bash
+# GitHub CLI 사용 시 (저장소 생성 + 첫 push를 한 번에)
+gh repo create hcjo1223/walk-draw --public --source=. --push
+
+# 또는 웹에서 빈 저장소(walk-draw, public)를 만든 뒤
+git remote add origin https://github.com/hcjo1223/walk-draw.git
+git push -u origin main
+```
+
 ## 배포
 
 ### GitHub Pages (자동)
