@@ -5,7 +5,6 @@ import MapView, { type MapHandle } from './components/MapView';
 import {
   formatClock,
   formatDistance,
-  formatDuration,
   formatPace,
   haversine,
   interpolateLatLng,
@@ -14,7 +13,32 @@ import {
   type PathPoint,
   type Walk,
 } from './lib/geo';
-import { GUIDES, guideById, guideLatLngs, guideWalkPath } from './lib/guides';
+import {
+  GUIDES,
+  guideById,
+  guideLatLngs,
+  guidePerimeterRatio,
+  guideSampleWaypoints,
+  guideSizeForDistance,
+  guideWalkPath,
+} from './lib/guides';
+import {
+  DIST_PRESETS_M,
+  PACE_PRESETS,
+  TIME_PRESETS_MIN,
+  calcDistanceFromMinutes,
+  calcMinutesFromDistance,
+  formatEstimatedMinutes,
+  paceById,
+  type GoalMode,
+  type PaceId,
+} from './lib/pace';
+import {
+  computeNavProgress,
+  fetchWalkableRoute,
+  turnIcon,
+  type WalkableRoute,
+} from './lib/routing';
 import { makeLoop, walkAlongPath, type WalkController } from './lib/simulate';
 import {
   clearDraft,
@@ -42,7 +66,7 @@ const COLORS = [
 const WIDTHS = [3, 5, 8, 12, 18];
 
 type Mode = 'idle' | 'recording' | 'paused';
-type Page = 'main' | 'guide' | 'style';
+type Page = 'main' | 'guide' | 'goal' | 'style';
 type View = 'map' | 'card' | 'gallery';
 
 function defaultTitle(guideName?: string | null) {
@@ -60,10 +84,28 @@ export default function App() {
   const [color, setColor] = useState(COLORS[0].v);
   const [width, setWidth] = useState(5);
   const [sim, setSim] = useState(false);
+
+  // 도안 상태
   const [guideId, setGuideId] = useState<string | null>(null);
   const [guideSize, setGuideSize] = useState(240);
   const [guideRot, setGuideRot] = useState(0);
   const [guideCenter, setGuideCenter] = useState<LatLng | null>(null);
+
+  // 도보 목표(시간/거리) + 3단계 속도
+  const [goalMode, setGoalMode] = useState<GoalMode>('time');
+  const [goalMinutes, setGoalMinutes] = useState(20);
+  const [goalDistanceM, setGoalDistanceM] = useState(1500);
+  const [paceId, setPaceId] = useState<PaceId>('walk');
+  const [autoSizeToGoal, setAutoSizeToGoal] = useState(true);
+
+  // 실제 도보 네비게이션
+  const [walkableNavEnabled, setWalkableNavEnabled] = useState(true);
+  const [walkableRoute, setWalkableRoute] = useState<WalkableRoute | null>(null);
+  const [routingBusy, setRoutingBusy] = useState(false);
+  const [routeRefreshSeq, setRouteRefreshSeq] = useState(0);
+  const [navCollapsed, setNavCollapsed] = useState(false);
+  const [ttsEnabled, setTtsEnabled] = useState(false);
+
   const [mapCenter, setMapCenter] = useState<LatLng>(DEFAULT_CENTER);
   const [myLoc, setMyLoc] = useState<LatLng | null>(null);
   const [accuracy, setAccuracy] = useState<number | null>(null);
@@ -83,10 +125,16 @@ export default function App() {
   const autoRef = useRef<WalkController | null>(null);
   const toastTimer = useRef(0);
   const titleTimer = useRef(0);
+  const transformingRef = useRef(false);
+  const navPrevDistRef = useRef(0);
+  const lastSpokenStepRef = useRef<number | null>(null);
+
   const pointsRef = useRef<PathPoint[]>(points);
   const walkRef = useRef<Walk | null>(walk);
+  const myLocRef = useRef<LatLng | null>(myLoc);
   pointsRef.current = points;
   walkRef.current = walk;
+  myLocRef.current = myLoc;
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -106,6 +154,18 @@ export default function App() {
       window.clearTimeout(titleTimer.current);
     };
   }, [refreshWalks]);
+
+  /* ---------------- 목표 · 속도 계산 ---------------- */
+
+  const activePace = useMemo(() => paceById(paceId), [paceId]);
+  const targetDistanceM = useMemo(
+    () => (goalMode === 'time' ? calcDistanceFromMinutes(goalMinutes, paceId) : goalDistanceM),
+    [goalMode, goalMinutes, goalDistanceM, paceId],
+  );
+  const estimatedGoalMinutes = useMemo(
+    () => (goalMode === 'time' ? goalMinutes : calcMinutesFromDistance(goalDistanceM, paceId)),
+    [goalMode, goalMinutes, goalDistanceM, paceId],
+  );
 
   /* ---------------- 위치 ---------------- */
 
@@ -148,7 +208,7 @@ export default function App() {
       },
       { enableHighAccuracy: true, timeout: 9000, maximumAge: 30000 },
     );
-  }, []);
+  }, [showToast]);
 
   // 실시간 GPS 기록
   useEffect(() => {
@@ -213,20 +273,127 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [mode, color, width, guideId]);
 
-  /* ---------------- 도안 ---------------- */
-
-  const guide = useMemo(() => {
-    const g = guideById(guideId);
-    if (!g) return null;
-    const center = guideCenter ?? myLoc ?? mapCenter;
-    return guideLatLngs(g, center, guideSize, guideRot);
-  }, [guideId, guideCenter, myLoc, mapCenter, guideSize, guideRot]);
+  /* ---------------- 도안 & 실제 도보 경로 탐색 ---------------- */
 
   const activeGuide = useMemo(() => guideById(guideId), [guideId]);
+  const effectiveGuideCenter = useMemo(
+    () => (guideId ? (guideCenter ?? myLoc ?? mapCenter) : null),
+    [guideId, guideCenter, myLoc, mapCenter],
+  );
+
+  const guide = useMemo(() => {
+    if (!activeGuide || !effectiveGuideCenter) return null;
+    return guideLatLngs(activeGuide, effectiveGuideCenter, guideSize, guideRot);
+  }, [activeGuide, effectiveGuideCenter, guideSize, guideRot]);
+
+  const estimatedGuideDistanceM = useMemo(() => {
+    if (!activeGuide) return 0;
+    const detour = walkableNavEnabled ? 1.2 : 1.0;
+    return Math.round(guidePerimeterRatio(activeGuide) * guideSize * detour);
+  }, [activeGuide, guideSize, walkableNavEnabled]);
+
+  // 도안이 활성화되고 실제 도보 네비가 켜져 있으면 도로 기반 경로 탐색
+  useEffect(() => {
+    if (!activeGuide || !effectiveGuideCenter || !walkableNavEnabled) {
+      setWalkableRoute(null);
+      setRoutingBusy(false);
+      navPrevDistRef.current = 0;
+      return;
+    }
+    if (transformingRef.current) return;
+
+    const ctrl = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setRoutingBusy(true);
+      try {
+        const groups = guideSampleWaypoints(activeGuide, effectiveGuideCenter, guideSize, guideRot);
+        const route = await fetchWalkableRoute(groups, myLocRef.current, ctrl.signal);
+        if (!ctrl.signal.aborted) {
+          setWalkableRoute(route);
+          navPrevDistRef.current = 0;
+          lastSpokenStepRef.current = null;
+        }
+      } catch {
+        /* 취소됨 */
+      } finally {
+        if (!ctrl.signal.aborted) setRoutingBusy(false);
+      }
+    }, 280);
+
+    return () => {
+      window.clearTimeout(timer);
+      ctrl.abort();
+    };
+  }, [activeGuide, effectiveGuideCenter, guideSize, guideRot, walkableNavEnabled, routeRefreshSeq]);
+
+  const navProgress = useMemo(() => {
+    if (!walkableRoute) return null;
+    return computeNavProgress(walkableRoute, myLoc, navPrevDistRef.current);
+  }, [walkableRoute, myLoc]);
+
+  useEffect(() => {
+    if (navProgress && !navProgress.offRoute) {
+      navPrevDistRef.current = navProgress.traveledM;
+    }
+  }, [navProgress]);
+
+  // TTS 음성 안내 (옵션)
+  useEffect(() => {
+    if (!ttsEnabled || mode !== 'recording' || !navProgress?.currentStep) return;
+    const step = navProgress.currentStep;
+    if (lastSpokenStepRef.current === step.id) return;
+    lastSpokenStepRef.current = step.id;
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+        const text =
+          step.turnType === 'arrive'
+            ? '도안 완주 지점에 도착했습니다.'
+            : `${step.instruction}${step.distanceM >= 20 ? `, ${Math.round(step.distanceM)}미터 직진` : ''}`;
+        const u = new SpeechSynthesisUtterance(text);
+        u.lang = 'ko-KR';
+        u.rate = 1.05;
+        window.speechSynthesis.speak(u);
+      } catch {
+        /* 미지원 환경 무시 */
+      }
+    }
+  }, [ttsEnabled, mode, navProgress]);
+
+  const selectGuide = useCallback(
+    (id: string) => {
+      const g = guideById(id);
+      if (!g) return;
+      const baseCenter = guideCenter ?? myLoc ?? mapCenter;
+      setGuideCenter(baseCenter);
+      setGuideId(g.id);
+      setGuideRot(0);
+      if (autoSizeToGoal) {
+        const nextSize = guideSizeForDistance(g, targetDistanceM, walkableNavEnabled ? 1.2 : 1.0);
+        setGuideSize(nextSize);
+      }
+      showToast(`${g.name} 도안을 띄웠어요. 지도에서 드래그해 옮길 수 있어요.`);
+    },
+    [guideCenter, myLoc, mapCenter, autoSizeToGoal, targetDistanceM, walkableNavEnabled, showToast],
+  );
+
+  const syncGuideSizeToGoal = useCallback(
+    (distM: number) => {
+      if (!activeGuide || !autoSizeToGoal) return;
+      setGuideSize(guideSizeForDistance(activeGuide, distM, walkableNavEnabled ? 1.2 : 1.0));
+    },
+    [activeGuide, autoSizeToGoal, walkableNavEnabled],
+  );
 
   /* ---------------- 동작 ---------------- */
 
   const startAutoWalk = useCallback(() => {
+    if (autoWalking) {
+      autoRef.current?.stop();
+      setAutoWalking(false);
+      showToast('자동 걷기를 멈췄어요.');
+      return;
+    }
     if (mode !== 'recording') {
       showToast('먼저 산책을 시작해 주세요.');
       return;
@@ -235,12 +402,23 @@ export default function App() {
       showToast('자동 걷기는 시뮬레이션 모드에서 쓸 수 있어요.');
       return;
     }
+
     const g = guideById(guideId);
-    const center = guideCenter ?? myLoc ?? mapRef.current?.center() ?? DEFAULT_CENTER;
-    const path = g ? guideWalkPath(g, center, guideSize) : makeLoop(center, guideSize);
+    const center = effectiveGuideCenter ?? myLoc ?? mapRef.current?.center() ?? DEFAULT_CENTER;
+
+    let path: LatLng[];
+    if (walkableRoute && walkableRoute.path.length >= 2) {
+      path = walkableRoute.path.slice();
+      navPrevDistRef.current = 0;
+    } else if (g) {
+      path = guideWalkPath(g, center, guideSize, guideRot);
+    } else {
+      path = makeLoop(center, guideSize);
+    }
+
     autoRef.current?.stop();
     autoRef.current = walkAlongPath(path, {
-      speed: 24,
+      speed: activePace.simSpeed,
       onPoint: (p) => {
         appendRef.current([p], 0.05);
         setMyLoc(p);
@@ -248,18 +426,38 @@ export default function App() {
       },
       onDone: () => {
         setAutoWalking(false);
-        showToast('도안을 다 걸었어요. 완료를 눌러 카드를 만들어 보세요.');
+        showToast('도보 코스를 다 걸었어요! 완료를 눌러 카드를 만들어 보세요.');
       },
     });
     setAutoWalking(true);
-    showToast(g ? `${g.name} 도안을 따라 걷는 중…` : '자유 데모 루트를 걷는 중…');
-  }, [mode, sim, guideId, guideCenter, myLoc, guideSize, showToast]);
+    showToast(
+      walkableRoute?.isRealRoad
+        ? `${g?.name ?? '도보'} 실제 도로 네비대로 걷는 중… (${activePace.label})`
+        : g
+          ? `${g.name} 도안을 따라 걷는 중… (${activePace.label})`
+          : '자유 데모 루트를 걷는 중…',
+    );
+  }, [
+    autoWalking,
+    mode,
+    sim,
+    guideId,
+    effectiveGuideCenter,
+    myLoc,
+    walkableRoute,
+    guideSize,
+    guideRot,
+    activePace,
+    showToast,
+  ]);
 
   const beginWalk = useCallback(() => {
     setPoints([]);
     setNow(Date.now());
     elapsedRef.current = 0;
     startRef.current = Date.now();
+    navPrevDistRef.current = 0;
+    lastSpokenStepRef.current = null;
     setMode('recording');
     setPage('main');
     setDraft(null);
@@ -269,7 +467,7 @@ export default function App() {
     } else if (sim) {
       showToast('지도를 눌러 점을 찍거나 [자동 걷기]를 눌러 보세요.');
     } else {
-      showToast('기록을 시작했어요. 걸으면서 선이 그려집니다.');
+      showToast('기록을 시작했어요. 네비 안내를 따라 걸어 보세요.');
     }
   }, [sim, showToast]);
 
@@ -359,6 +557,21 @@ export default function App() {
     [mode, sim, guideId, showToast],
   );
 
+  const handleGuideMove = useCallback((ll: LatLng) => {
+    transformingRef.current = true;
+    setGuideCenter(ll);
+  }, []);
+
+  const handleGuideRotate = useCallback((deg: number) => {
+    transformingRef.current = true;
+    setGuideRot(deg);
+  }, []);
+
+  const handleGuideTransformEnd = useCallback(() => {
+    transformingRef.current = false;
+    setRouteRefreshSeq((n) => n + 1);
+  }, []);
+
   const handleTitle = useCallback((id: string, title: string) => {
     const cur = walkRef.current;
     if (!cur || cur.id !== id) return;
@@ -378,6 +591,22 @@ export default function App() {
   const paused = mode === 'paused';
   const idle = mode === 'idle';
 
+  // 목표 진행률 (실제 도보 경로가 있으면 경로 길이 기준, 없으면 목표 거리 기준)
+  const activeGoalDistM =
+    walkableRoute && walkableRoute.totalDistanceM > 0
+      ? walkableRoute.totalDistanceM
+      : targetDistanceM;
+  const goalProgressPct = Math.min(
+    100,
+    Math.round(((distance || 0) / Math.max(1, activeGoalDistM)) * 100),
+  );
+  const navRouteEtaMin = walkableRoute
+    ? calcMinutesFromDistance(walkableRoute.totalDistanceM, paceId)
+    : estimatedGoalMinutes;
+  const navRemainEtaMin = navProgress
+    ? calcMinutesFromDistance(navProgress.remainingM, paceId)
+    : navRouteEtaMin;
+
   return (
     <div className="fixed inset-0 overflow-hidden bg-ink text-zinc-100">
       <MapView
@@ -386,11 +615,19 @@ export default function App() {
         color={color}
         width={width}
         guide={guide}
+        guideCenter={effectiveGuideCenter}
+        guideRot={guideRot}
+        guideInteractive={!rec && Boolean(guideId)}
+        walkableRoute={walkableRoute}
+        activeNavPoint={rec && navProgress?.nextStep ? navProgress.nextStep.location : null}
         myLoc={myLoc}
         accuracy={accuracy}
         tile={tile}
         onMapClick={onMapClick}
         onCenterChange={setMapCenter}
+        onGuideMove={handleGuideMove}
+        onGuideRotate={handleGuideRotate}
+        onGuideTransformEnd={handleGuideTransformEnd}
       />
 
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between px-3 pt-[max(0.7rem,env(safe-area-inset-top))]">
@@ -460,9 +697,127 @@ export default function App() {
         </div>
       </div>
 
+      {/* 실제 도보 네비게이션 HUD 배너 */}
+      {guideId && walkableNavEnabled && (routingBusy || walkableRoute) && (
+        <div className="pointer-events-none absolute inset-x-0 top-[calc(env(safe-area-inset-top)+52px)] z-20 pl-3 pr-14">
+          <div className="pointer-events-auto max-w-md rounded-2xl border border-white/12 bg-[#0B1017]/90 px-3 py-2.5 shadow-xl backdrop-blur-md">
+            {routingBusy && !walkableRoute ? (
+              <div className="flex items-center gap-2 text-[12px] text-sky">
+                <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-sky" />
+                실제 도보 길로 네비게이션 경로를 찾는 중…
+              </div>
+            ) : walkableRoute ? (
+              <>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-sky/15 text-lg font-bold text-sky">
+                      {rec && navProgress?.offRoute
+                        ? '🧭'
+                        : rec && navProgress?.currentStep
+                          ? turnIcon(navProgress.currentStep.turnType)
+                          : '🚶'}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-[13px] font-bold text-white">
+                        {rec && navProgress?.offRoute
+                          ? `경로에서 ${Math.round(navProgress.distFromRouteM)}m 벗어남`
+                          : rec && navProgress?.currentStep
+                            ? navProgress.currentStep.instruction
+                            : walkableRoute.isRealRoad
+                              ? `${activeGuide?.name ?? '도안'} 실제 도보 코스`
+                              : `${activeGuide?.name ?? '도안'} 직선 안내 코스`}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-2 text-[11px] text-zinc-400">
+                        {rec && navProgress ? (
+                          navProgress.isArrived ? (
+                            <span className="font-semibold text-lime">완주 지점 도착!</span>
+                          ) : (
+                            <>
+                              <span className="font-semibold text-sky">
+                                {navProgress.nextStep
+                                  ? `${formatDistance(navProgress.distToNextStepM)} 앞 ${navProgress.nextStep.instruction}`
+                                  : `도착까지 ${formatDistance(navProgress.remainingM)}`}
+                              </span>
+                              <span>· 남음 {formatEstimatedMinutes(navRemainEtaMin)}</span>
+                            </>
+                          )
+                        ) : (
+                          <>
+                            <span className={walkableRoute.isRealRoad ? 'text-mint' : 'text-amber'}>
+                              {walkableRoute.isRealRoad ? '실제 도보길' : '직선 대체'}
+                            </span>
+                            <span>
+                              {formatDistance(walkableRoute.totalDistanceM)} · {activePace.emoji}{' '}
+                              {formatEstimatedMinutes(navRouteEtaMin)}
+                            </span>
+                            {walkableRoute.approachDistanceM && walkableRoute.approachDistanceM > 35 && (
+                              <span className="text-sky">
+                                · 출발점 {formatDistance(walkableRoute.approachDistanceM)}
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      onClick={() => setTtsEnabled((v) => !v)}
+                      className={`flex h-7 w-7 items-center justify-center rounded-lg border text-xs ${
+                        ttsEnabled
+                          ? 'border-lime/40 bg-lime/15 text-lime'
+                          : 'border-white/10 bg-white/[0.04] text-zinc-400'
+                      }`}
+                      aria-label="음성 안내"
+                      title="음성 안내 켜기/끄기"
+                    >
+                      {ttsEnabled ? '🔊' : '🔇'}
+                    </button>
+                    <button
+                      onClick={() => setRouteRefreshSeq((n) => n + 1)}
+                      className="flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-xs text-zinc-300 active:scale-95"
+                      aria-label="경로 재탐색"
+                      title="도보 경로 재탐색"
+                    >
+                      {routingBusy ? '⏳' : '🔄'}
+                    </button>
+                    <button
+                      onClick={() => setNavCollapsed((c) => !c)}
+                      className="flex h-7 w-6 items-center justify-center rounded-lg text-[11px] text-zinc-400"
+                      aria-label="네비 접기"
+                    >
+                      {navCollapsed ? '▾' : '▴'}
+                    </button>
+                  </div>
+                </div>
+
+                {!navCollapsed && (
+                  <div className="mt-2">
+                    {rec && navProgress ? (
+                      <div className="h-1.5 w-full overflow-hidden rounded-full bg-white/10">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-sky to-lime transition-all"
+                          style={{ width: `${Math.round(navProgress.progressRatio * 100)}%` }}
+                        />
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-between text-[10px] text-zinc-500">
+                        <span>✥ 중앙·도안을 드래그해 이동 · ↻ 핸들로 회전</span>
+                        <span>경유 안내 {walkableRoute.steps.length}구간</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : null}
+          </div>
+        </div>
+      )}
+
       {/* 토스트 */}
       {toast && (
-        <div className="pointer-events-none absolute inset-x-0 top-[calc(env(safe-area-inset-top)+58px)] z-50 flex justify-center px-6">
+        <div className="pointer-events-none absolute inset-x-0 top-[calc(env(safe-area-inset-top)+128px)] z-50 flex justify-center px-6">
           <div className="fade-up max-w-[92%] rounded-2xl border border-white/10 bg-[#111A24]/95 px-3.5 py-2 text-center text-[12px] leading-snug text-zinc-200 shadow-lg backdrop-blur">
             {toast}
           </div>
@@ -517,6 +872,31 @@ export default function App() {
               <Stat label="페이스" value={formatPace(distance, elapsed)} suffix="/km" />
             </div>
 
+            {/* 목표 & 속도 요약 바 */}
+            <div className="mt-2 px-1">
+              <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                <span>
+                  {activePace.emoji} {activePace.label} · 목표{' '}
+                  <strong className="text-zinc-200">{formatDistance(activeGoalDistM)}</strong> (약{' '}
+                  {formatEstimatedMinutes(
+                    walkableRoute ? navRouteEtaMin : estimatedGoalMinutes,
+                  )}
+                  )
+                </span>
+                {(rec || paused) && (
+                  <span className="font-semibold tabular-nums text-lime">{goalProgressPct}%</span>
+                )}
+              </div>
+              {(rec || paused) && (
+                <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full bg-lime transition-all"
+                    style={{ width: `${goalProgressPct}%` }}
+                  />
+                </div>
+              )}
+            </div>
+
             <div className="mt-3 flex items-center gap-2 overflow-x-auto scroll-x pb-1">
               <button
                 onClick={() => setPage('style')}
@@ -532,6 +912,15 @@ export default function App() {
                 }`}
               >
                 {activeGuide ? `${activeGuide.emoji} ${activeGuide.name}` : '✏️ 도안 따라 걷기'}
+              </button>
+              <button
+                onClick={() => setPage('goal')}
+                className="chip flex shrink-0 items-center gap-1.5 rounded-full border-mint/30 bg-mint/10 px-3 py-2 text-[12px] text-mint"
+              >
+                {activePace.emoji}{' '}
+                {goalMode === 'time'
+                  ? formatEstimatedMinutes(goalMinutes)
+                  : formatDistance(goalDistanceM)}
               </button>
               <button
                 onClick={() => {
@@ -552,6 +941,7 @@ export default function App() {
                 onClick={() => {
                   setGuideId(null);
                   setGuideCenter(null);
+                  setWalkableRoute(null);
                 }}
                 className="chip flex shrink-0 items-center gap-1.5 rounded-full px-3 py-2 text-[12px] text-zinc-400"
               >
@@ -575,7 +965,13 @@ export default function App() {
                     onClick={startAutoWalk}
                     className="w-full rounded-xl border border-sky/40 bg-sky/10 py-2.5 text-[13px] font-semibold text-sky active:scale-[0.99]"
                   >
-                    {autoWalking ? '⏹ 자동 걷기 멈추기' : activeGuide ? `${activeGuide.emoji} 도안 자동 걷기` : '▶ 자동 걷기 (데모 루트)'}
+                    {autoWalking
+                      ? '⏹ 자동 걷기 멈추기'
+                      : walkableRoute?.isRealRoad
+                        ? `${activeGuide?.emoji ?? '🧭'} 실제 도보 경로로 자동 걷기`
+                        : activeGuide
+                          ? `${activeGuide.emoji} 도안 자동 걷기`
+                          : '▶ 자동 걷기 (데모 루트)'}
                   </button>
                 )}
                 <div className="flex gap-2">
@@ -626,23 +1022,204 @@ export default function App() {
           </>
         )}
 
+        {page === 'goal' && (
+          <div className="pb-1">
+            <SheetHeader title="도보 시간 · 거리 · 속도" onBack={() => setPage('main')} />
+
+            {/* 기준 선택: 시간 vs 거리 */}
+            <div className="mt-3 grid grid-cols-2 gap-1.5 rounded-2xl border border-white/10 bg-white/[0.03] p-1">
+              <button
+                onClick={() => {
+                  setGoalMode('time');
+                  syncGuideSizeToGoal(calcDistanceFromMinutes(goalMinutes, paceId));
+                }}
+                className={`rounded-xl py-2 text-[12px] font-bold transition ${
+                  goalMode === 'time' ? 'bg-lime text-[#0B1015]' : 'text-zinc-400'
+                }`}
+              >
+                ⏱ 시간으로 정하기
+              </button>
+              <button
+                onClick={() => {
+                  setGoalMode('distance');
+                  syncGuideSizeToGoal(goalDistanceM);
+                }}
+                className={`rounded-xl py-2 text-[12px] font-bold transition ${
+                  goalMode === 'distance' ? 'bg-lime text-[#0B1015]' : 'text-zinc-400'
+                }`}
+              >
+                📏 거리로 정하기
+              </button>
+            </div>
+
+            {/* 프리셋 & 슬라이더 */}
+            {goalMode === 'time' ? (
+              <div className="mt-3 rounded-2xl border border-white/8 bg-white/[0.03] p-3">
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {TIME_PRESETS_MIN.map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => {
+                        setGoalMinutes(m);
+                        syncGuideSizeToGoal(calcDistanceFromMinutes(m, paceId));
+                      }}
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                        goalMinutes === m
+                          ? 'bg-lime/20 text-lime ring-1 ring-lime/50'
+                          : 'bg-white/[0.05] text-zinc-300'
+                      }`}
+                    >
+                      {formatEstimatedMinutes(m)}
+                    </button>
+                  ))}
+                </div>
+                <Slider
+                  label="목표 시간"
+                  value={goalMinutes}
+                  min={5}
+                  max={120}
+                  step={5}
+                  display={formatEstimatedMinutes(goalMinutes)}
+                  onChange={(m) => {
+                    setGoalMinutes(m);
+                    syncGuideSizeToGoal(calcDistanceFromMinutes(m, paceId));
+                  }}
+                />
+              </div>
+            ) : (
+              <div className="mt-3 rounded-2xl border border-white/8 bg-white/[0.03] p-3">
+                <div className="mb-2 flex flex-wrap gap-1.5">
+                  {DIST_PRESETS_M.map((d) => (
+                    <button
+                      key={d}
+                      onClick={() => {
+                        setGoalDistanceM(d);
+                        syncGuideSizeToGoal(d);
+                      }}
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                        goalDistanceM === d
+                          ? 'bg-lime/20 text-lime ring-1 ring-lime/50'
+                          : 'bg-white/[0.05] text-zinc-300'
+                      }`}
+                    >
+                      {formatDistance(d)}
+                    </button>
+                  ))}
+                </div>
+                <Slider
+                  label="목표 거리"
+                  value={goalDistanceM}
+                  min={200}
+                  max={10000}
+                  step={100}
+                  display={formatDistance(goalDistanceM)}
+                  onChange={(d) => {
+                    setGoalDistanceM(d);
+                    syncGuideSizeToGoal(d);
+                  }}
+                />
+              </div>
+            )}
+
+            {/* 3단계 속도 선택 (각 단계별 계산 결과 실시간 표시) */}
+            <div className="mt-3 text-[11px] font-semibold text-zinc-400">
+              속도 3단계 선택 ({goalMode === 'time' ? '예상 거리 자동 계산' : '예상 시간 자동 계산'})
+            </div>
+            <div className="mt-1.5 grid grid-cols-3 gap-2">
+              {PACE_PRESETS.map((p) => {
+                const selected = paceId === p.id;
+                const calcDist = calcDistanceFromMinutes(goalMinutes, p.id);
+                const calcMin = calcMinutesFromDistance(goalDistanceM, p.id);
+                return (
+                  <button
+                    key={p.id}
+                    onClick={() => {
+                      setPaceId(p.id);
+                      if (goalMode === 'time') {
+                        syncGuideSizeToGoal(calcDistanceFromMinutes(goalMinutes, p.id));
+                      }
+                    }}
+                    className={`flex flex-col items-start rounded-2xl border p-2.5 text-left transition active:scale-[0.98] ${
+                      selected
+                        ? 'border-lime/60 bg-lime/12 text-white'
+                        : 'border-white/10 bg-white/[0.03] text-zinc-300'
+                    }`}
+                  >
+                    <div className="flex w-full items-center justify-between">
+                      <span className="text-base leading-none">{p.emoji}</span>
+                      <span className="text-[10px] text-zinc-400">{p.kmh} km/h</span>
+                    </div>
+                    <div className="mt-1.5 text-[12px] font-bold">{p.label}</div>
+                    <div className={`mt-0.5 text-[12px] font-extrabold tabular-nums ${selected ? 'text-lime' : 'text-mint'}`}>
+                      {goalMode === 'time' ? formatDistance(calcDist) : formatEstimatedMinutes(calcMin)}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {activeGuide && (
+              <div className="mt-3 flex items-center justify-between rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2">
+                <div>
+                  <div className="text-[12px] font-semibold text-zinc-200">
+                    도안 크기 자동 맞추기 ({activeGuide.emoji} {activeGuide.name})
+                  </div>
+                  <div className="text-[10px] text-zinc-500">
+                    목표 {formatDistance(targetDistanceM)}에 맞춰 크기 {guideSize} m 적용
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    const next = !autoSizeToGoal;
+                    setAutoSizeToGoal(next);
+                    if (next) {
+                      setGuideSize(
+                        guideSizeForDistance(
+                          activeGuide,
+                          targetDistanceM,
+                          walkableNavEnabled ? 1.2 : 1.0,
+                        ),
+                      );
+                    }
+                  }}
+                  className={`relative h-6 w-11 rounded-full transition ${
+                    autoSizeToGoal ? 'bg-lime' : 'bg-white/15'
+                  }`}
+                  aria-label="도안 크기 자동 맞추기"
+                >
+                  <span
+                    className={`absolute top-0.5 h-5 w-5 rounded-full bg-[#0B1015] transition-all ${
+                      autoSizeToGoal ? 'left-[22px]' : 'left-0.5'
+                    }`}
+                  />
+                </button>
+              </div>
+            )}
+
+            <button
+              onClick={() => setPage('main')}
+              className="mt-3 w-full rounded-2xl bg-lime py-3 text-[13px] font-extrabold text-[#0B1015] active:scale-[0.99]"
+            >
+              적용 ({activePace.emoji} {formatDistance(targetDistanceM)} ·{' '}
+              {formatEstimatedMinutes(estimatedGoalMinutes)})
+            </button>
+          </div>
+        )}
+
         {page === 'guide' && (
           <div className="pb-1">
             <SheetHeader title="도안 따라 걷기" onBack={() => setPage('main')} />
             <p className="mt-1 text-[11px] leading-relaxed text-zinc-500">
-              도안을 지도에 띄워 두고 그 길을 따라 걸으면 그림이 완성됩니다. 지도를 누르면 도안
-              위치가 옮겨져요.
+              지도 위 도안을 <strong className="text-zinc-300">드래그해서 이동</strong>하고{' '}
+              <strong className="text-sky">↻ 핸들로 회전</strong>할 수 있어요. 실제 보행자 도로에
+              맞춰 네비게이션이 안내합니다.
             </p>
-            <div className="mt-3 grid grid-cols-4 gap-2">
+            <div className="mt-2.5 grid grid-cols-4 gap-2">
               {GUIDES.map((g) => (
                 <button
                   key={g.id}
-                  onClick={() => {
-                    setGuideId(g.id);
-                    setGuideRot(0);
-                    showToast(`${g.name} 도안을 띄웠어요.`);
-                  }}
-                  className={`flex flex-col items-center gap-1 rounded-2xl border py-2.5 text-[11px] active:scale-95 ${
+                  onClick={() => selectGuide(g.id)}
+                  className={`flex flex-col items-center gap-1 rounded-2xl border py-2 text-[11px] active:scale-95 ${
                     guideId === g.id
                       ? 'border-lime/60 bg-lime/12 text-lime'
                       : 'border-white/10 bg-white/[0.03] text-zinc-300'
@@ -655,12 +1232,38 @@ export default function App() {
             </div>
 
             {guideId && (
-              <div className="mt-3 space-y-3 rounded-2xl border border-white/8 bg-white/[0.03] p-3">
+              <div className="mt-3 space-y-2.5 rounded-2xl border border-white/8 bg-white/[0.03] p-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-[12px] font-semibold text-zinc-200">
+                      실제 도보 길 네비게이션
+                    </div>
+                    <div className="text-[10px] text-zinc-500">
+                      건물·벽을 피해 걸을 수 있는 인도/산책로로 경로 생성
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setWalkableNavEnabled((v) => !v)}
+                    className={`relative h-6 w-11 rounded-full transition ${
+                      walkableNavEnabled ? 'bg-sky' : 'bg-white/15'
+                    }`}
+                    aria-label="실제 도보 길 네비게이션"
+                  >
+                    <span
+                      className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${
+                        walkableNavEnabled ? 'left-[22px]' : 'left-0.5'
+                      }`}
+                    />
+                  </button>
+                </div>
+
                 <Slider
-                  label="도안 크기"
+                  label={`도안 크기 (예상 ${formatDistance(
+                    walkableRoute?.totalDistanceM || estimatedGuideDistanceM,
+                  )})`}
                   value={guideSize}
                   min={40}
-                  max={600}
+                  max={2500}
                   step={10}
                   display={`${guideSize} m`}
                   onChange={setGuideSize}
@@ -689,10 +1292,21 @@ export default function App() {
                     📍 내 위치에 맞추기
                   </button>
                   <button
-                    onClick={() => setGuideRot((r) => (r + 90) % 360)}
-                    className="flex-1 rounded-xl border border-white/10 bg-white/[0.04] py-2 text-[12px] font-semibold text-zinc-200 active:scale-95"
+                    onClick={() => {
+                      if (activeGuide) {
+                        setGuideSize(
+                          guideSizeForDistance(
+                            activeGuide,
+                            targetDistanceM,
+                            walkableNavEnabled ? 1.2 : 1.0,
+                          ),
+                        );
+                        showToast(`목표(${formatDistance(targetDistanceM)})에 크기를 맞췄어요.`);
+                      }
+                    }}
+                    className="flex-1 rounded-xl border border-mint/25 bg-mint/10 py-2 text-[12px] font-semibold text-mint active:scale-95"
                   >
-                    ↻ 90° 회전
+                    🎯 목표 거리 맞추기
                   </button>
                 </div>
               </div>
@@ -703,6 +1317,7 @@ export default function App() {
                 onClick={() => {
                   setGuideId(null);
                   setGuideCenter(null);
+                  setWalkableRoute(null);
                   setPage('main');
                 }}
                 className="flex-1 rounded-2xl border border-white/12 bg-white/[0.04] py-3 text-[13px] font-semibold text-zinc-300 active:scale-[0.99]"

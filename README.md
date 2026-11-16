@@ -11,16 +11,19 @@
 | 기능 | 설명 |
 | --- | --- |
 | **자유 드로잉** | 실시간 GPS(`watchPosition`)로 이동 경로를 지도 위에 부드러운 선으로 그립니다. 펜 색상 7가지 · 굵기 5단계, 시작/일시정지/재개/완료. |
-| **도안 따라 걷기** | 하트·별·나선·강아지 발바닥·원·집·산·번개 8개 도안을 현재 위치 중심에 반투명 점선으로 띄웁니다. 크기(40~600m)·회전(0~359°), 지도를 눌러 위치 이동. |
+| **도안 따라 걷기** | 하트·별·나선·강아지 발바닥·원·집·산·번개 8개 도안을 지도 위에 띄웁니다. 도안/중앙 핸들(`✥`)을 드래그해 위치 이동, `↻` 핸들로 회전 제스처 지원. |
+| **실제 도보 네비게이션** | 도안을 적용하면 OSRM 보행자 도로(`routed-foot`)를 탐색해 건물·벽을 피한 실제 인도/산책로 경로와 턴바이턴 안내(음성 TTS 선택 가능)를 제공합니다. |
+| **시간·거리·속도 목표** | 시간 기준 또는 거리 기준으로 목표를 정하고 **천천히 걷기(3.6 km/h) · 걷기(4.8 km/h) · 가볍게 뛰기(7.5 km/h)** 3단계별 예상 거리/시간을 계산해 선택·도안 크기에 반영합니다. |
 | **그림 카드** | 완료하면 지도 배경을 숨기고 **순수 경로만** 1080×1350 포스터 PNG로 저장/공유 (거리·시간·페이스·날짜·제목 포함). |
 | **타임랩스** | 0% → 100% 그려지는 과정을 0.7x/1x/1.6x 속도로 재생. |
-| **시뮬레이션 모드** | 집 안에서 테스트: 지도 탭으로 점 찍기 + 자동 걷기(도안/데모 루프). GPS 없이 타임랩스·PNG까지 전부 확인. |
+| **시뮬레이션 모드** | 집 안에서 테스트: 지도 탭으로 점 찍기 + 자동 걷기(실제 도보 네비/도안/데모 루프). GPS 없이 타임랩스·PNG까지 전부 확인. |
 | **로컬 갤러리** | 로그인 없이 IndexedDB(막히면 localStorage)에 저장. 목록에서 다시 열어 PNG 저장 가능. |
 
 ## 스택
 
 - Vite + React 19 + TypeScript + Tailwind CSS v4
 - Leaflet + OpenStreetMap 타일 (API 키 불필요) — 다크 지도는 CSS 필터로 반전해 사용, 다크/밝은 지도 토글
+- OSRM 보행자 경로 탐색 (`routing.openstreetmap.de/routed-foot`) + 오프라인 직선 대체 안내
 - 포스터는 **HTML5 Canvas 직접 렌더링** — 타일을 캡처하지 않으므로 CORS 이슈가 없습니다
 - PWA 매니페스트 (`standalone`, iPhone 홈 화면 추가 대응)
 
@@ -50,21 +53,12 @@ git push -u origin main
 
 ## 배포
 
-### GitHub Pages (현재 이 방식으로 배포 중)
+### GitHub Pages (GitHub Actions 자동 배포)
 
 **라이브:** <https://hcjo1223.github.io/WalkDraw/>
 
-- 빌드 결과(`dist/`)를 `gh-pages` 브랜치 루트에 올리고, **Settings → Pages → Source: Deploy from a branch → `gh-pages` / (root)** 로 서빙합니다.
-- 갱신 방법:
-
-```bash
-npm run build
-# dist/ 내용을 gh-pages 브랜치에 커밋·푸시
-```
-
-`vite.config.ts`의 `base: './'` 덕분에 하위 경로(`/WalkDraw/`) 배포에서도 자산 경로가 깨지지 않습니다.
-
-> 푸시할 때마다 자동 빌드·배포하려면 `.github/workflows/deploy.yml`을 추가하고 Pages 소스를 **GitHub Actions**로 바꾸면 됩니다. 단, 워크플로 파일은 저장소 쓰기 권한에 `Workflows` 권한이 있어야 push할 수 있습니다(현재 Pickle GitHub App에는 이 권한이 없어 워크플로 파일을 올리지 못했습니다).
+- [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) 워크플로가 `main` 브랜치에 push될 때마다 자동으로 `npm ci && npm run build`를 실행해 `dist/`를 GitHub Pages에 배포합니다.
+- `vite.config.ts`의 `base: './'` 덕분에 하위 경로(`/WalkDraw/`) 배포에서도 자산 경로가 깨지지 않습니다.
 
 ### Vercel
 
@@ -73,15 +67,19 @@ npm run build
 ## 구조
 
 ```
+.github/workflows/
+  deploy.yml              main push 시 GitHub Pages 자동 빌드·배포
 src/
-  App.tsx                 화면·상태 머신 (idle/recording/paused), 하단 시트 UI
+  App.tsx                 화면·상태 머신 (idle/recording/paused), 네비 HUD, 하단 시트 UI
   components/
-    MapView.tsx           Leaflet 지도, 경로/도안/내위치 레이어
+    MapView.tsx           Leaflet 지도, 제스처 드래그/회전 핸들, 도보 네비 경로 레이어
     CardView.tsx          포스터 + 타임랩스 + PNG 저장/공유
     Gallery.tsx           저장된 그림 목록 (썸네일 캔버스)
   lib/
     geo.ts                거리·투영·RDP 단순화·Catmull-Rom 스무딩·포맷터
-    guides.ts             도안 8종 정의(정규화 좌표) + 위경도 변환
+    guides.ts             도안 8종 정의, 목표 거리 기반 크기 계산, 경유지 샘플링
+    pace.ts               시간/거리 목표 및 3단계 속도(천천히 걷기·걷기·가볍게 뛰기) 계산
+    routing.ts            OSRM 보행자 도로 경로 탐색 및 턴바이턴 진행률 계산
     poster.ts             포스터 캔버스 렌더러(진행률 지원)
     simulate.ts           자동 걷기(rAF), 데모 루프 생성
     storage.ts            IndexedDB/localStorage 저장·임시저장(draft)

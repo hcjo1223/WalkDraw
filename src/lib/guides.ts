@@ -172,9 +172,103 @@ export function guideLatLngs(
 }
 
 /** 자동 걷기용: 도안 조각들을 이어 붙인 하나의 경로 */
-export function guideWalkPath(guide: Guide, center: LatLng, sizeMeters: number): LatLng[] {
-  const lines = guideLatLngs(guide, center, sizeMeters, 0);
+export function guideWalkPath(
+  guide: Guide,
+  center: LatLng,
+  sizeMeters: number,
+  rotationDeg = 0,
+): LatLng[] {
+  const lines = guideLatLngs(guide, center, sizeMeters, rotationDeg);
   const out: LatLng[] = [];
   for (const line of lines) out.push(...line);
   return out;
+}
+
+/** sizeMeters = 1 일 때 도안 전체 예상 둘레(m) */
+export function guidePerimeterRatio(guide: Guide): number {
+  let sum = 0;
+  for (let s = 0; s < guide.subpaths.length; s++) {
+    const sp = guide.subpaths[s];
+    for (let i = 1; i < sp.length; i++) {
+      sum += Math.hypot(sp[i].x - sp[i - 1].x, sp[i].y - sp[i - 1].y);
+    }
+    if (s > 0) {
+      const prevEnd = guide.subpaths[s - 1][guide.subpaths[s - 1].length - 1];
+      const curStart = sp[0];
+      if (prevEnd && curStart) {
+        sum += Math.hypot(curStart.x - prevEnd.x, curStart.y - prevEnd.y);
+      }
+    }
+  }
+  // guideLatLngs는 half = sizeMeters / 2 로 스케일한다
+  return Math.max(1, sum * 0.5);
+}
+
+/** 목표 도보 거리(m)에 맞춘 도안 크기(m) 계산 */
+export function guideSizeForDistance(
+  guide: Guide,
+  targetDistanceM: number,
+  detourFactor = 1.2,
+): number {
+  const ratio = guidePerimeterRatio(guide);
+  const raw = targetDistanceM / (ratio * detourFactor);
+  const rounded = Math.round(raw / 10) * 10;
+  return Math.max(40, Math.min(2500, rounded));
+}
+
+function sampleSubpath(sp: XY[], maxPts: number): XY[] {
+  if (sp.length <= maxPts) return sp;
+  // 누적 길이 기반으로 균등 샘플링
+  const cum: number[] = [0];
+  for (let i = 1; i < sp.length; i++) {
+    cum.push(cum[i - 1] + Math.hypot(sp[i].x - sp[i - 1].x, sp[i].y - sp[i - 1].y));
+  }
+  const total = cum[cum.length - 1] || 1;
+  const out: XY[] = [sp[0]];
+  let j = 0;
+  for (let k = 1; k < maxPts - 1; k++) {
+    const target = (k / (maxPts - 1)) * total;
+    while (j < cum.length - 2 && cum[j + 1] < target) j++;
+    const span = cum[j + 1] - cum[j];
+    const t = span > 0 ? (target - cum[j]) / span : 0;
+    out.push({
+      x: sp[j].x + (sp[j + 1].x - sp[j].x) * t,
+      y: sp[j].y + (sp[j + 1].y - sp[j].y) * t,
+    });
+  }
+  out.push(sp[sp.length - 1]);
+  return out;
+}
+
+/** 실제 도보 경로 탐색(OSRM)에 넘길 도안 대표 경유지 생성 */
+export function guideSampleWaypoints(
+  guide: Guide,
+  center: LatLng,
+  sizeMeters: number,
+  rotationDeg = 0,
+): LatLng[][] {
+  const half = sizeMeters / 2;
+  const rad = (rotationDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+
+  const perSubpathMax =
+    guide.id === 'paw'
+      ? 5
+      : guide.id === 'spiral'
+        ? 16
+        : guide.id === 'star'
+          ? 11
+          : guide.id === 'house' || guide.id === 'mountain' || guide.id === 'bolt'
+            ? 10
+            : 12;
+
+  return guide.subpaths.map((sp) => {
+    const sampled = sampleSubpath(sp, perSubpathMax);
+    return sampled.map((p) => {
+      const xr = p.x * cos + p.y * sin;
+      const yr = -p.x * sin + p.y * cos;
+      return toLatLng({ x: xr * half, y: yr * half }, center);
+    });
+  });
 }
