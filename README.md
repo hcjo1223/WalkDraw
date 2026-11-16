@@ -4,6 +4,8 @@
 
 > "내가 걷거나 달려서 그림을 만들자" — 자유 드로잉 · 도안 따라 걷기 · 그림 카드/타임랩스
 
+**라이브:** https://hcjo1223.github.io/WalkDraw/
+
 ## 무엇을 할 수 있나
 
 | 기능 | 설명 |
@@ -39,10 +41,10 @@ npm run build:single  # dist-single/index.html (CSS·JS 인라인 단일 파일)
 
 ```bash
 # GitHub CLI 사용 시 (저장소 생성 + 첫 push를 한 번에)
-gh repo create hcjo1223/walk-draw --public --source=. --push
+gh repo create hcjo1223/WalkDraw --public --source=. --push
 
-# 또는 웹에서 빈 저장소(walk-draw, public)를 만든 뒤
-git remote add origin https://github.com/hcjo1223/walk-draw.git
+# 또는 웹에서 빈 저장소(WalkDraw, public)를 만든 뒤
+git remote add origin https://github.com/hcjo1223/WalkDraw.git
 git push -u origin main
 ```
 
@@ -52,7 +54,7 @@ git push -u origin main
 
 1. 저장소를 public으로 만들고 `main` 브랜치에 push
 2. **Settings → Pages → Build and deployment → Source: GitHub Actions** 선택
-3. `.github/workflows/deploy.yml`이 빌드·배포합니다 → `https://<사용자>.github.io/walk-draw/`
+3. `.github/workflows/deploy.yml`이 빌드·배포합니다 → `https://hcjo1223.github.io/WalkDraw/`
 
 `vite.config.ts`의 `base: './'` 덕분에 하위 경로 배포에서도 자산 경로가 깨지지 않습니다.
 
