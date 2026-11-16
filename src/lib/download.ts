@@ -26,8 +26,8 @@ export async function shareBlob(blob: Blob, filename: string, title: string): Pr
   }
 }
 
-export function stampName(prefix: string, ts: number): string {
+export function stampName(prefix: string, ts: number, ext = 'png'): string {
   const d = new Date(ts);
   const p = (n: number) => String(n).padStart(2, '0');
-  return `${prefix}-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.png`;
+  return `${prefix}-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.${ext}`;
 }

@@ -105,6 +105,33 @@ const BOLT: XY[] = [
   P(0.22, 0.95),
 ];
 
+const CAT: XY[] = [
+  P(-0.7, 0.35),
+  P(-0.62, 0.92),
+  P(-0.25, 0.55),
+  P(0.25, 0.55),
+  P(0.62, 0.92),
+  P(0.7, 0.35),
+  P(0.84, -0.2),
+  P(0.45, -0.76),
+  P(-0.45, -0.76),
+  P(-0.84, -0.2),
+  P(-0.7, 0.35),
+];
+
+const MOON: XY[] = [
+  P(0.25, 0.92),
+  P(-0.28, 0.72),
+  P(-0.6, 0.28),
+  P(-0.62, -0.3),
+  P(-0.25, -0.76),
+  P(0.35, -0.92),
+  P(0.05, -0.52),
+  P(-0.05, 0.0),
+  P(0.08, 0.52),
+  P(0.25, 0.92),
+];
+
 function normalize(shape: GuideShape): Guide {
   let minX = Infinity;
   let maxX = -Infinity;
@@ -133,9 +160,11 @@ function normalize(shape: GuideShape): Guide {
 
 export const GUIDES: Guide[] = [
   { id: 'heart', name: '하트', emoji: '💚', subpaths: [heartPath()] },
+  { id: 'cat', name: '고양이', emoji: '🐱', subpaths: [CAT] },
   { id: 'star', name: '별', emoji: '⭐', subpaths: [starPath()] },
+  { id: 'moon', name: '달', emoji: '🌙', subpaths: [MOON] },
   { id: 'spiral', name: '나선', emoji: '🌀', subpaths: [spiralPath()] },
-  { id: 'paw', name: '강아지 발바닥', emoji: '🐾', subpaths: pawPaths() },
+  { id: 'paw', name: '발바닥', emoji: '🐾', subpaths: pawPaths() },
   { id: 'circle', name: '원', emoji: '⭕', subpaths: [circlePath()] },
   { id: 'house', name: '집', emoji: '🏠', subpaths: [HOUSE] },
   { id: 'mountain', name: '산', emoji: '⛰️', subpaths: [MOUNTAIN] },
@@ -145,6 +174,26 @@ export const GUIDES: Guide[] = [
 export function guideById(id: string | null): Guide | null {
   if (!id) return null;
   return GUIDES.find((g) => g.id === id) ?? null;
+}
+
+/** 정규화 XY[][] 도형을 위경도 라인으로 변환 */
+export function xyGroupsToLatLngs(
+  subpaths: XY[][],
+  center: LatLng,
+  sizeMeters: number,
+  rotationDeg = 0,
+): LatLng[][] {
+  const half = sizeMeters / 2;
+  const rad = (rotationDeg * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  return subpaths.map((sp) =>
+    sp.map((p) => {
+      const xr = p.x * cos + p.y * sin;
+      const yr = -p.x * sin + p.y * cos;
+      return toLatLng({ x: xr * half, y: yr * half }, center);
+    }),
+  );
 }
 
 /**
@@ -157,18 +206,7 @@ export function guideLatLngs(
   sizeMeters: number,
   rotationDeg = 0,
 ): LatLng[][] {
-  const half = sizeMeters / 2;
-  const rad = (rotationDeg * Math.PI) / 180;
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
-  return guide.subpaths.map((sp) =>
-    sp.map((p) => {
-      // 화면 기준 시계방향 회전 (수학 좌표계는 반시계가 +)
-      const xr = p.x * cos + p.y * sin;
-      const yr = -p.x * sin + p.y * cos;
-      return toLatLng({ x: xr * half, y: yr * half }, center);
-    }),
-  );
+  return xyGroupsToLatLngs(guide.subpaths, center, sizeMeters, rotationDeg);
 }
 
 /** 자동 걷기용: 도안 조각들을 이어 붙인 하나의 경로 */
@@ -184,24 +222,38 @@ export function guideWalkPath(
   return out;
 }
 
-/** sizeMeters = 1 일 때 도안 전체 예상 둘레(m) */
-export function guidePerimeterRatio(guide: Guide): number {
+export function xyGroupsPerimeterRatio(subpaths: XY[][]): number {
   let sum = 0;
-  for (let s = 0; s < guide.subpaths.length; s++) {
-    const sp = guide.subpaths[s];
+  for (let s = 0; s < subpaths.length; s++) {
+    const sp = subpaths[s];
     for (let i = 1; i < sp.length; i++) {
       sum += Math.hypot(sp[i].x - sp[i - 1].x, sp[i].y - sp[i - 1].y);
     }
     if (s > 0) {
-      const prevEnd = guide.subpaths[s - 1][guide.subpaths[s - 1].length - 1];
+      const prevEnd = subpaths[s - 1][subpaths[s - 1].length - 1];
       const curStart = sp[0];
       if (prevEnd && curStart) {
         sum += Math.hypot(curStart.x - prevEnd.x, curStart.y - prevEnd.y);
       }
     }
   }
-  // guideLatLngs는 half = sizeMeters / 2 로 스케일한다
   return Math.max(1, sum * 0.5);
+}
+
+/** sizeMeters = 1 일 때 도안 전체 예상 둘레(m) */
+export function guidePerimeterRatio(guide: Guide): number {
+  return xyGroupsPerimeterRatio(guide.subpaths);
+}
+
+export function xyGroupsSizeForDistance(
+  subpaths: XY[][],
+  targetDistanceM: number,
+  detourFactor = 1.2,
+): number {
+  const ratio = xyGroupsPerimeterRatio(subpaths);
+  const raw = targetDistanceM / (ratio * detourFactor);
+  const rounded = Math.round(raw / 10) * 10;
+  return Math.max(40, Math.min(3000, rounded));
 }
 
 /** 목표 도보 거리(m)에 맞춘 도안 크기(m) 계산 */
@@ -210,15 +262,11 @@ export function guideSizeForDistance(
   targetDistanceM: number,
   detourFactor = 1.2,
 ): number {
-  const ratio = guidePerimeterRatio(guide);
-  const raw = targetDistanceM / (ratio * detourFactor);
-  const rounded = Math.round(raw / 10) * 10;
-  return Math.max(40, Math.min(2500, rounded));
+  return xyGroupsSizeForDistance(guide.subpaths, targetDistanceM, detourFactor);
 }
 
 function sampleSubpath(sp: XY[], maxPts: number): XY[] {
   if (sp.length <= maxPts) return sp;
-  // 누적 길이 기반으로 균등 샘플링
   const cum: number[] = [0];
   for (let i = 1; i < sp.length; i++) {
     cum.push(cum[i - 1] + Math.hypot(sp[i].x - sp[i - 1].x, sp[i].y - sp[i - 1].y));
@@ -240,30 +288,19 @@ function sampleSubpath(sp: XY[], maxPts: number): XY[] {
   return out;
 }
 
-/** 실제 도보 경로 탐색(OSRM)에 넘길 도안 대표 경유지 생성 */
-export function guideSampleWaypoints(
-  guide: Guide,
+export function xyGroupsSampleWaypoints(
+  subpaths: XY[][],
   center: LatLng,
   sizeMeters: number,
   rotationDeg = 0,
+  perSubpathMax = 12,
 ): LatLng[][] {
   const half = sizeMeters / 2;
   const rad = (rotationDeg * Math.PI) / 180;
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
 
-  const perSubpathMax =
-    guide.id === 'paw'
-      ? 5
-      : guide.id === 'spiral'
-        ? 16
-        : guide.id === 'star'
-          ? 11
-          : guide.id === 'house' || guide.id === 'mountain' || guide.id === 'bolt'
-            ? 10
-            : 12;
-
-  return guide.subpaths.map((sp) => {
+  return subpaths.map((sp) => {
     const sampled = sampleSubpath(sp, perSubpathMax);
     return sampled.map((p) => {
       const xr = p.x * cos + p.y * sin;
@@ -271,4 +308,25 @@ export function guideSampleWaypoints(
       return toLatLng({ x: xr * half, y: yr * half }, center);
     });
   });
+}
+
+/** 실제 도보 경로 탐색(OSRM)에 넘길 도안 대표 경유지 생성 */
+export function guideSampleWaypoints(
+  guide: Guide,
+  center: LatLng,
+  sizeMeters: number,
+  rotationDeg = 0,
+): LatLng[][] {
+  const perSubpathMax =
+    guide.id === 'paw'
+      ? 5
+      : guide.id === 'spiral'
+        ? 16
+        : guide.id === 'star'
+          ? 11
+          : guide.id === 'house' || guide.id === 'mountain' || guide.id === 'bolt' || guide.id === 'cat'
+            ? 11
+            : 12;
+
+  return xyGroupsSampleWaypoints(guide.subpaths, center, sizeMeters, rotationDeg, perSubpathMax);
 }

@@ -1,4 +1,5 @@
-import { haversine, toXY, type LatLng } from './geo';
+import { centerOf, haversine, toLatLng, toXY, type LatLng, type XY } from './geo';
+import { xyGroupsSampleWaypoints, xyGroupsToLatLngs } from './guides';
 
 export type TurnType =
   | 'depart'
@@ -550,4 +551,232 @@ export function computeNavProgress(
     isArrived,
     approachDistM,
   };
+}
+
+/* ---------------- 장소 검색 (Nominatim 무료 API) ---------------- */
+
+export type PlaceResult = {
+  id: string;
+  name: string;
+  address: string;
+  location: LatLng;
+};
+
+export async function searchPlaces(
+  query: string,
+  near?: LatLng | null,
+  signal?: AbortSignal,
+): Promise<PlaceResult[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const params = new URLSearchParams({
+    format: 'json',
+    q,
+    limit: '6',
+    'accept-language': 'ko',
+    addressdetails: '1',
+  });
+  if (near) {
+    const d = 0.08;
+    params.set('viewbox', `${near.lng - d},${near.lat + d},${near.lng + d},${near.lat - d}`);
+  }
+  const url = `https://nominatim.openstreetmap.org/search?${params.toString()}`;
+  const res = await fetch(url, { signal });
+  if (!res.ok) return [];
+  const arr = (await res.json()) as Array<{
+    place_id: number | string;
+    name?: string;
+    display_name: string;
+    lat: string;
+    lon: string;
+  }>;
+  return arr.map((item) => {
+    const parts = item.display_name.split(',').map((s) => s.trim());
+    const name = item.name || parts[0] || q;
+    const address = parts.slice(1, 4).join(' ');
+    return {
+      id: String(item.place_id),
+      name,
+      address,
+      location: { lat: Number(item.lat), lng: Number(item.lon) },
+    };
+  });
+}
+
+/* ---------------- 닮은 정도 (%) 계산 & 3코스 후보 생성 ---------------- */
+
+export type RouteCandidate = {
+  id: string;
+  label: string;
+  tag: string;
+  route: WalkableRoute;
+  similarity?: number;
+};
+
+function normalizeLatLngs(pts: LatLng[]): XY[] {
+  if (pts.length === 0) return [];
+  const org = centerOf(pts) ?? pts[0];
+  const xy = pts.map((p) => toXY(p, org));
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const p of xy) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  const span = Math.max(maxX - minX, maxY - minY, 1);
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const k = 2 / span;
+  return xy.map((p) => ({ x: (p.x - cx) * k, y: (p.y - cy) * k }));
+}
+
+function subsampleXY(pts: XY[], maxPts = 48): XY[] {
+  if (pts.length <= maxPts) return pts;
+  const out: XY[] = [];
+  const step = (pts.length - 1) / (maxPts - 1);
+  for (let i = 0; i < maxPts; i++) out.push(pts[Math.round(i * step)]);
+  return out;
+}
+
+/** 원래 그린 도형과 실제 보행로 경로의 닮은 정도(0~99%) 계산 */
+export function computeShapeSimilarity(targetPts: LatLng[], routedPts: LatLng[]): number {
+  const a = subsampleXY(normalizeLatLngs(targetPts), 42);
+  const b = subsampleXY(normalizeLatLngs(routedPts), 56);
+  if (a.length < 2 || b.length < 2) return 75;
+
+  const avgMinDist = (src: XY[], dst: XY[]) => {
+    let sum = 0;
+    for (const p of src) {
+      let best = Infinity;
+      for (const q of dst) {
+        const d = Math.hypot(p.x - q.x, p.y - q.y);
+        if (d < best) best = d;
+      }
+      sum += best;
+    }
+    return sum / src.length;
+  };
+
+  const err = (avgMinDist(a, b) + avgMinDist(b, a)) / 2;
+  const score = Math.round(Math.max(48, Math.min(98, 100 - err * 78)));
+  return score;
+}
+
+/** 손그림/도안 1개를 3가지 변형(기본, +각도/크기, -각도/크기)으로 실제 길 후보 3개 생성 */
+export async function generateSketchCandidates(
+  subpaths: XY[][],
+  center: LatLng,
+  baseSizeM: number,
+  baseRotDeg: number,
+  userLoc?: LatLng | null,
+  signal?: AbortSignal,
+): Promise<RouteCandidate[]> {
+  const variants = [
+    { id: 'c1', label: '추천 그림 코스', tag: '기본 맞춤', scale: 1.0, rotOffset: 0 },
+    { id: 'c2', label: '대안 그림 코스 1', tag: '여유 동선', scale: 1.14, rotOffset: 8 },
+    { id: 'c3', label: '대안 그림 코스 2', tag: '컴팩트', scale: 0.88, rotOffset: -8 },
+  ];
+
+  return Promise.all(
+    variants.map(async (v) => {
+      const sz = Math.max(40, Math.round((baseSizeM * v.scale) / 10) * 10);
+      const rot = ((baseRotDeg + v.rotOffset) % 360 + 360) % 360;
+      const wps = xyGroupsSampleWaypoints(subpaths, center, sz, rot, 12);
+      const shapePts = xyGroupsToLatLngs(subpaths, center, sz, rot).flat();
+      const route = await fetchWalkableRoute(wps, userLoc, signal);
+      const similarity = route.isRealRoad
+        ? computeShapeSimilarity(shapePts, route.path)
+        : 96;
+      return {
+        id: v.id,
+        label: v.label,
+        tag: v.tag,
+        route,
+        similarity,
+      };
+    }),
+  );
+}
+
+/** AI 코스 추천: 출발지(+선택 경유지) 기준 목표 거리에 맞는 3개 보행 코스 생성 */
+export async function generateAiCandidates(
+  opts: {
+    origin: LatLng;
+    waypoint?: LatLng | null;
+    roundTrip: boolean;
+    targetDistM: number;
+  },
+  signal?: AbortSignal,
+): Promise<RouteCandidate[]> {
+  const { origin, waypoint, roundTrip, targetDistM } = opts;
+
+  const makeLoopWaypoints = (bearingDeg: number, distM: number): LatLng[] => {
+    const side = Math.max(80, distM / (3.4 * 1.25));
+    const b0 = (bearingDeg * Math.PI) / 180;
+    const b1 = ((bearingDeg + 62) * Math.PI) / 180;
+    const p1 = toLatLng({ x: Math.sin(b0) * side, y: Math.cos(b0) * side }, origin);
+    const p2 = toLatLng({ x: Math.sin(b1) * side * 0.95, y: Math.cos(b1) * side * 0.95 }, origin);
+    return [origin, p1, p2, origin];
+  };
+
+  const makeWaypointCandidates = (): Array<{ id: string; label: string; tag: string; wps: LatLng[] }> => {
+    if (!waypoint) {
+      return [
+        { id: 'ai1', label: '추천 산책 코스', tag: '순환', wps: makeLoopWaypoints(25, targetDistM) },
+        { id: 'ai2', label: '대안 산책 코스 1', tag: '순환', wps: makeLoopWaypoints(145, targetDistM) },
+        { id: 'ai3', label: '대안 산책 코스 2', tag: '순환', wps: makeLoopWaypoints(265, targetDistM) },
+      ];
+    }
+
+    const wpXY = toXY(waypoint, origin);
+    const baseDist = Math.hypot(wpXY.x, wpXY.y) || 200;
+    const ux = wpXY.x / baseDist;
+    const uy = wpXY.y / baseDist;
+    const px = -uy;
+    const py = ux;
+    const mid = { x: wpXY.x * 0.5, y: wpXY.y * 0.5 };
+    const lateral = Math.max(90, Math.min(baseDist * 0.48, (targetDistM - baseDist * 2) * 0.28));
+
+    if (roundTrip) {
+      const leftDetour = toLatLng({ x: mid.x + px * lateral, y: mid.y + py * lateral }, origin);
+      const rightDetour = toLatLng({ x: mid.x - px * lateral, y: mid.y - py * lateral }, origin);
+      return [
+        { id: 'ai1', label: '추천 산책 코스', tag: '왕복 순환', wps: [origin, waypoint, leftDetour, origin] },
+        { id: 'ai2', label: '대안 산책 코스 1', tag: '반대쪽 순환', wps: [origin, rightDetour, waypoint, origin] },
+        { id: 'ai3', label: '대안 산책 코스 2', tag: '직통 왕복', wps: [origin, waypoint, origin] },
+      ];
+    }
+
+    const detourL = toLatLng({ x: mid.x + px * lateral, y: mid.y + py * lateral }, origin);
+    const detourR = toLatLng({ x: mid.x - px * lateral, y: mid.y - py * lateral }, origin);
+    return [
+      { id: 'ai1', label: '추천 산책 코스', tag: '편도', wps: [origin, waypoint] },
+      { id: 'ai2', label: '대안 산책 코스 1', tag: '여유 경유', wps: [origin, detourL, waypoint] },
+      { id: 'ai3', label: '대안 산책 코스 2', tag: '우회 경유', wps: [origin, detourR, waypoint] },
+    ];
+  };
+
+  const defs = makeWaypointCandidates();
+  return Promise.all(
+    defs.map(async (d) => ({
+      id: d.id,
+      label: d.label,
+      tag: d.tag,
+      route: await fetchWalkableRoute([d.wps], null, signal),
+    })),
+  );
+}
+
+/** 찜한 코스 경로를 네비게이션 가능한 WalkableRoute로 복원 */
+export function hydrateSavedRoute(
+  pts: LatLng[],
+  isRealRoad: boolean,
+  userLoc?: LatLng | null,
+): WalkableRoute {
+  const r = buildFallbackRoute([pts], userLoc);
+  return { ...r, isRealRoad };
 }

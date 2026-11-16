@@ -1,68 +1,40 @@
 # WalkDraw · 발자취 스케치
 
-걸어서 그리는 GPS 드로잉. 산책 경로가 그림이 되고, 마지막엔 지도를 지운 포스터 카드 한 장과 타임랩스로 남습니다.
+걸어서 그리는 GPS 드로잉 & 코스 러닝 앱. 손그림이나 도안을 실제 걸을 수 있는 도보 길로 바꾸고, 동행 파트너와 함께 걸은 뒤 포스터 카드 · 타임랩스 영상 · 월말정산 달력으로 남깁니다.
 
-> "내가 걷거나 달려서 그림을 만들자" — 자유 드로잉 · 도안 따라 걷기 · 그림 카드/타임랩스
+> **산책온 · 발로그린그림 스타일의 올인원 GPS 아트 & 러닝** (백엔드·API 키 없이 100% 브라우저에서 동작)
 
 **라이브:** https://hcjo1223.github.io/WalkDraw/
 
-## 무엇을 할 수 있나
+## 주요 기능
 
 | 기능 | 설명 |
 | --- | --- |
-| **자유 드로잉** | 실시간 GPS(`watchPosition`)로 이동 경로를 지도 위에 부드러운 선으로 그립니다. 펜 색상 7가지 · 굵기 5단계, 시작/일시정지/재개/완료. |
-| **도안 따라 걷기** | 하트·별·나선·강아지 발바닥·원·집·산·번개 8개 도안을 지도 위에 띄웁니다. 도안/중앙 핸들(`✥`)을 드래그해 위치 이동, `↻` 핸들로 회전 제스처 지원. |
-| **실제 도보 네비게이션** | 도안을 적용하면 OSRM 보행자 도로(`routed-foot`)를 탐색해 건물·벽을 피한 실제 인도/산책로 경로와 턴바이턴 안내(음성 TTS 선택 가능)를 제공합니다. |
-| **시간·거리·속도 목표** | 시간 기준 또는 거리 기준으로 목표를 정하고 **천천히 걷기(3.6 km/h) · 걷기(4.8 km/h) · 가볍게 뛰기(7.5 km/h)** 3단계별 예상 거리/시간을 계산해 선택·도안 크기에 반영합니다. |
-| **그림 카드** | 완료하면 지도 배경을 숨기고 **순수 경로만** 1080×1350 포스터 PNG로 저장/공유 (거리·시간·페이스·날짜·제목 포함). |
-| **타임랩스** | 0% → 100% 그려지는 과정을 0.7x/1x/1.6x 속도로 재생. |
-| **시뮬레이션 모드** | 집 안에서 테스트: 지도 탭으로 점 찍기 + 자동 걷기(실제 도보 네비/도안/데모 루프). GPS 없이 타임랩스·PNG까지 전부 확인. |
-| **로컬 갤러리** | 로그인 없이 IndexedDB(막히면 localStorage)에 저장. 목록에서 다시 열어 PNG 저장 가능. |
+| **3가지 코스 설계** | ① **✏️ 그림/도안**: 점선 격자 스케치 패드(`사진 깔기`, 빠른 밑그림), 지도 위 직접 손그림, 10종 도안(`하트 · 고양이 · 별 · 달 · 나선 · 발바닥 · 원 · 집 · 산 · 번개`), **드래그(`✥`) · 회전(`↻`)**, **닮은 정도 % 포함 3개 보행 코스 후보 생성**<br>② **✨ AI 추천**: Nominatim 무료 장소 검색/지도 탭으로 경유지 지정, 왕복 순환/편도, 시간·거리·속도 맞춤 **3개 추천 코스 비교**<br>③ **📍 점 찍기**: 지도를 콕콕 찍어 원하는 길대로 자동 도보 경로 연결 |
+| **실제 도보 네비게이션 (Eyes-Free)** | OSRM 보행자 도로(`routed-foot`) 기반 턴바이턴 안내, 진행률 바, **음성 안내(턴 + 1km 마일스톤)**, **🔒 오터치 방지 화면 잠금 모드**. |
+| **시간·거리·속도 3단계 목표** | 시간 또는 거리 기준으로 목표를 정하고 **천천히 걷기(3.6 km/h) · 걷기(4.8 km/h) · 가볍게 뛰기(7.5 km/h)** 별 예상 거리/시간을 실시간 계산해 반영합니다. |
+| **🐾 파트너 도감 (20종)** | D~S급 오리지널 픽셀 아트 동행 친구 20종. 첫 선물 `산책코기`를 받고 산책 완료 시 새 파트너를 해금해 지도 위에서 함께 걷습니다. |
+| **📊 나의 기록 · 월말정산** | **달력** (일별 미니 경로 · `▶ 경로 재생` · **`✨ 월말정산 1080×1350 달력 포스터`**), **통계·배지** (주간 막대, 20주 히트맵, 8종 성취 배지), **🔖 찜한 코스** (`따라뛰기`). |
+| **🎨 카드 스튜디오 · 영상 저장** | 지도 배경을 숨긴 1080×1350 포스터 PNG, **배경 색상 7종 · 내 사진 깔기 · 이모지 스티커 배치**, 타임랩스 재생 및 **`🎬 영상 저장`(MediaRecorder)** 지원. |
+| **시뮬레이션 모드** | 실내 테스트: 지도 탭으로 점 찍기 + 자동 걷기로 네비게이션 · 피드백 · 파트너 · 포스터까지 전 기능을 GPS 없이 체험. |
 
 ## 스택
 
 - Vite + React 19 + TypeScript + Tailwind CSS v4
-- Leaflet + OpenStreetMap 타일 (API 키 불필요) — 다크 지도는 CSS 필터로 반전해 사용, 다크/밝은 지도 토글
-- OSRM 보행자 경로 탐색 (`routing.openstreetmap.de/routed-foot`) + 오프라인 직선 대체 안내
-- 포스터는 **HTML5 Canvas 직접 렌더링** — 타일을 캡처하지 않으므로 CORS 이슈가 없습니다
-- PWA 매니페스트 (`standalone`, iPhone 홈 화면 추가 대응)
+- Leaflet + OpenStreetMap 타일 (API 키 불필요) — 다크 지도는 CSS 필터 반전 사용, 다크/밝은 지도 토글
+- OSRM 보행자 경로 탐색 (`routing.openstreetmap.de/routed-foot`) + Nominatim 장소 검색 + 오프라인 직선 대체 안내
+- 포스터 · 월말정산 · 타임랩스 영상은 **HTML5 Canvas + `captureStream()` 직접 렌더링**
+- 로컬 저장: IndexedDB / `localStorage` (`walks`, `routes`, `partners`, `draft`)
 
 ## 로컬 실행
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173
-npm run build      # tsc --noEmit && vite build  → dist/
-npm run preview    # 빌드 결과 확인
-npm run build:single  # dist-single/index.html (CSS·JS 인라인 단일 파일)
+npm run dev           # http://localhost:5173
+npm run build         # tsc --noEmit && vite build → dist/
+npm run preview       # 빌드 결과 확인
+npm run build:single  # dist-single/index.html (단일 파일)
 ```
-
-> GPS는 HTTPS 또는 localhost에서만 동작합니다. 집 안에서는 **시뮬레이션 모드**를 켜고 지도를 눌러 그리면 됩니다.
-> iPhone Safari: 공유 → 홈 화면에 추가하면 전체 화면 앱처럼 열립니다.
-
-## 저장소 만들고 올리기 (처음 한 번)
-
-```bash
-# GitHub CLI 사용 시 (저장소 생성 + 첫 push를 한 번에)
-gh repo create hcjo1223/WalkDraw --public --source=. --push
-
-# 또는 웹에서 빈 저장소(WalkDraw, public)를 만든 뒤
-git remote add origin https://github.com/hcjo1223/WalkDraw.git
-git push -u origin main
-```
-
-## 배포
-
-### GitHub Pages (GitHub Actions 자동 배포)
-
-**라이브:** <https://hcjo1223.github.io/WalkDraw/>
-
-- [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) 워크플로가 `main` 브랜치에 push될 때마다 자동으로 `npm ci && npm run build`를 실행해 `dist/`를 GitHub Pages에 배포합니다.
-- `vite.config.ts`의 `base: './'` 덕분에 하위 경로(`/WalkDraw/`) 배포에서도 자산 경로가 깨지지 않습니다.
-
-### Vercel
-
-- 저장소 import → Framework: **Vite** → Build `npm run build`, Output `dist` → 배포 끝.
 
 ## 구조
 
@@ -70,31 +42,20 @@ git push -u origin main
 .github/workflows/
   deploy.yml              main push 시 GitHub Pages 자동 빌드·배포
 src/
-  App.tsx                 화면·상태 머신 (idle/recording/paused), 네비 HUD, 하단 시트 UI
+  App.tsx                 3탭 내비게이션(산책하기/나의 기록/파트너), 코스 모드, Eyes-Free HUD, 완료 피드백 모달
   components/
-    MapView.tsx           Leaflet 지도, 제스처 드래그/회전 핸들, 도보 네비 경로 레이어
-    CardView.tsx          포스터 + 타임랩스 + PNG 저장/공유
-    Gallery.tsx           저장된 그림 목록 (썸네일 캔버스)
+    MapView.tsx           Leaflet 지도, 제스처 드래그/회전 핸들, 지도 위 손그림, 핀 마커, 파트너 스프라이트
+    SketchPad.tsx         점선 격자 자유 스케치 패드 (사진 깔기 · 되돌리기 · 빠른 밑그림)
+    RecordsView.tsx       달력 · 월말정산 포스터 · 경로 재생 · 통계/20주 히트맵/8배지 · 찜한 코스
+    PartnersView.tsx      D~S급 20종 픽셀 파트너 도감 · 실루엣/해금/동행 설정
+    CardView.tsx          포스터 스튜디오(배경/사진/스티커) · 타임랩스 재생 & 영상/PNG 저장
   lib/
     geo.ts                거리·투영·RDP 단순화·Catmull-Rom 스무딩·포맷터
-    guides.ts             도안 8종 정의, 목표 거리 기반 크기 계산, 경유지 샘플링
+    guides.ts             도안 10종 정의, 정규화 XY 도형 투영·거리 기반 크기·경유지 샘플링
     pace.ts               시간/거리 목표 및 3단계 속도(천천히 걷기·걷기·가볍게 뛰기) 계산
-    routing.ts            OSRM 보행자 도로 경로 탐색 및 턴바이턴 진행률 계산
-    poster.ts             포스터 캔버스 렌더러(진행률 지원)
+    routing.ts            OSRM 도보 경로, Nominatim 검색, 닮은 정도(%), 스케치/AI 3코스 후보 생성
+    partners.ts           20종 픽셀 아트 파트너 SVG 생성 및 산책 보상 추첨
+    poster.ts             포스터 캔버스 렌더러(테마 7종·사진 배경·스티커·진행률)
     simulate.ts           자동 걷기(rAF), 데모 루프 생성
-    storage.ts            IndexedDB/localStorage 저장·임시저장(draft)
+    storage.ts            IndexedDB/localStorage(산책 기록·찜한 코스·파트너·임시저장)
 ```
-
-### 처리 흐름
-
-1. GPS 점 → 1m 미만 떨림 무시, 150m 이상 점프는 `brk`(선 끊김)로 기록
-2. 포스터: 로컬 평면(m) 투영 → RDP 1.4m 단순화 → Catmull-Rom 8샘플 → 캔버스에 맞춰 스케일
-3. 진행률 렌더: 전체 길이 대비 목표 거리까지 잘라 그리기 (타임랩스)
-4. 저장: 경로가 그대로 IndexedDB에 남아 나중에 다시 열어 PNG로 뽑을 수 있음
-
-## 다음에 붙이면 좋은 것
-
-- 경로 걸린 순서대로 색이 변하는 그라데이션 펜
-- 도안을 지도 위에서 손가락으로 회전/확대 (지금은 슬라이더)
-- 여러 산책을 이어 붙인 콜라주 카드
-- Web Share Target / 서비스워커 오프라인 셸

@@ -161,32 +161,78 @@ function traceProgress(
   return head;
 }
 
+export type PosterTheme = {
+  id: string;
+  label: string;
+  top: string;
+  mid: string;
+  bot: string;
+  light?: boolean;
+};
+
+export const POSTER_THEMES: PosterTheme[] = [
+  { id: 'ink', label: '잉크', top: '#0D141D', mid: '#080C12', bot: '#06080C' },
+  { id: 'forest', label: '포레스트', top: '#112218', mid: '#0A150F', bot: '#060C08' },
+  { id: 'midnight', label: '미드나잇', top: '#121830', mid: '#0A0E1D', bot: '#060810' },
+  { id: 'plum', label: '플럼', top: '#24142B', mid: '#140B18', bot: '#09060C' },
+  { id: 'sunset', label: '선셋', top: '#2E1818', mid: '#180D0E', bot: '#0B0708' },
+  { id: 'slate', label: '슬레이트', top: '#1E293B', mid: '#0F172A', bot: '#090D16' },
+  { id: 'cream', label: '크림', top: '#F8F7F2', mid: '#EFECE3', bot: '#E5E0D3', light: true },
+];
+
+export type PosterSticker = {
+  id: string;
+  emoji: string;
+  x: number; // 0..1
+  y: number; // 0..1
+};
+
+export type PosterDrawOpts = {
+  progress?: number;
+  showText?: boolean;
+  themeId?: string;
+  bgImage?: HTMLImageElement | null;
+  bgDim?: number;
+  stickers?: PosterSticker[];
+};
+
 export function drawPoster(
   ctx: CanvasRenderingContext2D,
   geom: PosterGeom,
-  opts: { progress?: number; showText?: boolean } = {},
+  opts: PosterDrawOpts = {},
 ) {
   const { W, H, walk, variant } = geom;
   const progress = opts.progress ?? 1;
   const showText = opts.showText ?? variant === 'card';
+  const theme = POSTER_THEMES.find((t) => t.id === opts.themeId) ?? POSTER_THEMES[0];
+  const isLight = Boolean(theme.light && !opts.bgImage);
   ctx.clearRect(0, 0, W, H);
 
   // 배경
   if (variant === 'thumb') {
     ctx.fillStyle = '#0C1219';
     ctx.fillRect(0, 0, W, H);
+  } else if (opts.bgImage && opts.bgImage.complete && opts.bgImage.naturalWidth > 0) {
+    // 사진 배경 cover 크롭
+    const img = opts.bgImage;
+    const scale = Math.max(W / img.naturalWidth, H / img.naturalHeight);
+    const dw = img.naturalWidth * scale;
+    const dh = img.naturalHeight * scale;
+    ctx.drawImage(img, (W - dw) / 2, (H - dh) / 2, dw, dh);
+    ctx.fillStyle = `rgba(7, 10, 15, ${opts.bgDim ?? 0.52})`;
+    ctx.fillRect(0, 0, W, H);
   } else {
     const bg = ctx.createLinearGradient(0, 0, W * 0.4, H);
-    bg.addColorStop(0, '#0D141D');
-    bg.addColorStop(0.55, '#080C12');
-    bg.addColorStop(1, '#06080C');
+    bg.addColorStop(0, theme.top);
+    bg.addColorStop(0.55, theme.mid);
+    bg.addColorStop(1, theme.bot);
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, W, H);
 
     // 경로 근처 은은한 색 번짐
     const focus = geom.tail ?? { x: W / 2, y: H / 2 };
     const glow = ctx.createRadialGradient(focus.x, focus.y, 0, focus.x, focus.y, W * 0.72);
-    glow.addColorStop(0, rgba(mix(walk.color, [255, 255, 255], 0.06), 0.18));
+    glow.addColorStop(0, rgba(mix(walk.color, [255, 255, 255], 0.06), isLight ? 0.14 : 0.18));
     glow.addColorStop(1, 'rgba(0,0,0,0)');
     ctx.save();
     ctx.fillStyle = glow;
@@ -197,17 +243,18 @@ export function drawPoster(
   // 경로
   if (geom.total > 0) {
     const lw = Math.max(1.5, W * 0.0125 * (walk.width / 5));
+    const strokeMain = isLight && walk.color.toUpperCase() === '#F2F5F9' ? '#1E293B' : walk.color;
     const grad = ctx.createLinearGradient(0, 0, W, H);
-    grad.addColorStop(0, walk.color);
-    grad.addColorStop(1, mix(walk.color, [255, 255, 255], 0.28));
+    grad.addColorStop(0, strokeMain);
+    grad.addColorStop(1, mix(strokeMain, isLight ? [15, 23, 42] : [255, 255, 255], 0.25));
 
     ctx.save();
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
     // 1) 빛 번짐(아우라)
-    ctx.strokeStyle = walk.color;
-    ctx.globalAlpha = variant === 'thumb' ? 0.18 : 0.11;
+    ctx.strokeStyle = strokeMain;
+    ctx.globalAlpha = variant === 'thumb' ? 0.18 : 0.14;
     ctx.lineWidth = lw * 2.4;
     traceProgress(ctx, geom, progress);
 
@@ -215,7 +262,7 @@ export function drawPoster(
     ctx.globalAlpha = 1;
     ctx.strokeStyle = grad;
     ctx.lineWidth = lw;
-    ctx.shadowColor = walk.color;
+    ctx.shadowColor = strokeMain;
     ctx.shadowBlur = variant === 'thumb' ? 6 : lw * 0.9;
     const head = traceProgress(ctx, geom, progress);
     ctx.shadowBlur = 0;
@@ -227,10 +274,10 @@ export function drawPoster(
       ctx.save();
       ctx.beginPath();
       ctx.arc(geom.head.x, geom.head.y, r * 1.05, 0, Math.PI * 2);
-      ctx.fillStyle = '#0A0F15';
+      ctx.fillStyle = isLight ? '#F8F7F2' : '#0A0F15';
       ctx.fill();
       ctx.lineWidth = Math.max(1.5, r * 0.42);
-      ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+      ctx.strokeStyle = isLight ? 'rgba(15,23,42,0.45)' : 'rgba(255,255,255,0.55)';
       ctx.stroke();
       ctx.restore();
     }
@@ -239,16 +286,28 @@ export function drawPoster(
       ctx.save();
       ctx.beginPath();
       ctx.arc(tip.x, tip.y, r * 1.35, 0, Math.PI * 2);
-      ctx.fillStyle = walk.color;
-      ctx.shadowColor = walk.color;
+      ctx.fillStyle = strokeMain;
+      ctx.shadowColor = strokeMain;
       ctx.shadowBlur = lw * 1.8;
       ctx.fill();
       ctx.shadowBlur = 0;
-      ctx.strokeStyle = 'rgba(8,12,18,0.9)';
+      ctx.strokeStyle = isLight ? '#F8F7F2' : 'rgba(8,12,18,0.9)';
       ctx.lineWidth = Math.max(1.5, r * 0.35);
       ctx.stroke();
       ctx.restore();
     }
+  }
+
+  // 스티커 오버레이
+  if (opts.stickers && opts.stickers.length > 0) {
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `${Math.round(W * 0.085)}px ${FONT}`;
+    for (const st of opts.stickers) {
+      ctx.fillText(st.emoji, st.x * W, st.y * H);
+    }
+    ctx.restore();
   }
 
   if (!showText) return;
@@ -258,13 +317,18 @@ export function drawPoster(
   ctx.save();
   ctx.textBaseline = 'alphabetic';
 
+  const mutedText = isLight ? 'rgba(15,23,42,0.48)' : 'rgba(255,255,255,0.42)';
+  const mainText = isLight ? '#0F172A' : '#F4F8FC';
+  const subText = isLight ? 'rgba(15,23,42,0.68)' : 'rgba(233,238,245,0.65)';
+  const lineStroke = isLight ? 'rgba(15,23,42,0.12)' : 'rgba(255,255,255,0.09)';
+
   // 브랜드 / 날짜
   ctx.font = `600 ${W * 0.024}px ${FONT}`;
-  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.fillStyle = mutedText;
   drawSpaced(ctx, 'WALK DRAW', padX, H * 0.072, W * 0.005);
 
   ctx.font = `500 ${W * 0.024}px ${FONT}`;
-  ctx.fillStyle = 'rgba(255,255,255,0.38)';
+  ctx.fillStyle = mutedText;
   ctx.textAlign = 'right';
   ctx.fillText(formatDate(walk.createdAt), W - padX, H * 0.072);
   ctx.textAlign = 'left';
@@ -278,7 +342,7 @@ export function drawPoster(
     titleSize -= 2;
     ctx.font = `800 ${titleSize}px ${FONT}`;
   }
-  ctx.fillStyle = '#F4F8FC';
+  ctx.fillStyle = mainText;
   ctx.fillText(title, padX, H * 0.145);
 
   // 하단 스탯
@@ -286,16 +350,16 @@ export function drawPoster(
   const dist = formatDistance(walk.distanceM);
   const distSize = W * 0.1;
   ctx.font = `800 ${distSize}px ${FONT}`;
-  ctx.fillStyle = '#FFFFFF';
+  ctx.fillStyle = mainText;
   ctx.fillText(dist, padX, statY);
 
   ctx.font = `500 ${W * 0.032}px ${FONT}`;
-  ctx.fillStyle = 'rgba(233,238,245,0.62)';
+  ctx.fillStyle = subText;
   const meta = `${formatDuration(walk.durationMs)}  ·  ${formatPace(walk.distanceM, walk.durationMs)}/km`;
   ctx.fillText(meta, padX, statY + W * 0.06);
 
   // 구분선
-  ctx.strokeStyle = 'rgba(255,255,255,0.09)';
+  ctx.strokeStyle = lineStroke;
   ctx.lineWidth = Math.max(1, W * 0.0015);
   ctx.beginPath();
   ctx.moveTo(padX, H * 0.93);
@@ -304,19 +368,27 @@ export function drawPoster(
 
   // 푸터
   ctx.font = `500 ${W * 0.023}px ${FONT}`;
-  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillStyle = mutedText;
   drawSpaced(ctx, '발자취 스케치', padX, H * 0.962, W * 0.0023);
 
   ctx.textAlign = 'right';
   const guideLabel = walk.guideId ? '도안 따라 걷기' : '자유 드로잉';
-  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.fillStyle = mutedText;
   ctx.fillText(`${guideLabel} · WalkDraw`, W - padX, H * 0.962);
   ctx.restore();
 }
 
 export async function renderPosterBlob(
   walk: Walk,
-  opts: { width?: number; height?: number; variant?: PosterVariant } = {},
+  opts: {
+    width?: number;
+    height?: number;
+    variant?: PosterVariant;
+    themeId?: string;
+    bgImage?: HTMLImageElement | null;
+    bgDim?: number;
+    stickers?: PosterSticker[];
+  } = {},
 ): Promise<Blob | null> {
   const W = opts.width ?? POSTER_W;
   const H = opts.height ?? POSTER_H;
@@ -326,6 +398,13 @@ export async function renderPosterBlob(
   const ctx = canvas.getContext('2d');
   if (!ctx) return null;
   const geom = makeGeometry(walk, W, H, opts.variant ?? 'card');
-  drawPoster(ctx, geom, { progress: 1, showText: true });
+  drawPoster(ctx, geom, {
+    progress: 1,
+    showText: true,
+    themeId: opts.themeId,
+    bgImage: opts.bgImage,
+    bgDim: opts.bgDim,
+    stickers: opts.stickers,
+  });
   return new Promise((resolve) => canvas.toBlob((b) => resolve(b), 'image/png', 0.95));
 }

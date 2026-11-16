@@ -1,6 +1,15 @@
 import L from 'leaflet';
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
-import { bboxOf, softenLatLngSegments, toXY, type LatLng, type PathPoint } from '../lib/geo';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import {
+  bboxOf,
+  centerOf,
+  haversine,
+  softenLatLngSegments,
+  toXY,
+  type LatLng,
+  type PathPoint,
+  type XY,
+} from '../lib/geo';
 import type { WalkableRoute } from '../lib/routing';
 
 // CARTO 베이스맵은 2025년부터 API 키 없이는 워터마크 타일만 내려줍니다.
@@ -22,6 +31,12 @@ export type MapHandle = {
   fit: (lls: LatLng[]) => void;
 };
 
+export type CandidatePreview = {
+  id: string;
+  path: LatLng[];
+  active: boolean;
+};
+
 type Props = {
   points: PathPoint[];
   color: string;
@@ -31,15 +46,20 @@ type Props = {
   guideRot: number;
   guideInteractive: boolean;
   walkableRoute: WalkableRoute | null;
+  candidateRoutes?: CandidatePreview[];
+  pinPoints?: LatLng[];
+  mapDrawMode?: boolean;
   activeNavPoint: LatLng | null;
   myLoc: LatLng | null;
   accuracy: number | null;
+  partnerIconUrl?: string | null;
   tile: 'dark' | 'voyager';
   onMapClick: (ll: LatLng) => void;
   onCenterChange: (ll: LatLng) => void;
   onGuideMove?: (ll: LatLng) => void;
   onGuideRotate?: (deg: number) => void;
   onGuideTransformEnd?: () => void;
+  onMapFreehandStroke?: (normStrokes: XY[][], center: LatLng, sizeMeters: number) => void;
 };
 
 const MapView = forwardRef<MapHandle, Props>(function MapView(
@@ -52,19 +72,25 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
     guideRot,
     guideInteractive,
     walkableRoute,
+    candidateRoutes,
+    pinPoints,
+    mapDrawMode,
     activeNavPoint,
     myLoc,
     accuracy,
+    partnerIconUrl,
     tile,
     onMapClick,
     onCenterChange,
     onGuideMove,
     onGuideRotate,
     onGuideTransformEnd,
+    onMapFreehandStroke,
   },
   ref,
 ) {
   const elRef = useRef<HTMLDivElement | null>(null);
+  const drawCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const svgRendererRef = useRef<L.SVG | null>(null);
   const tileRef = useRef<L.TileLayer | null>(null);
@@ -74,9 +100,12 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
   const guideHitRef = useRef<L.Polyline[]>([]);
   const moveHandleRef = useRef<L.Marker | null>(null);
   const rotHandleRef = useRef<L.Marker | null>(null);
+  const candidateLayersRef = useRef<L.Layer[]>([]);
   const routeLayersRef = useRef<L.Layer[]>([]);
+  const pinLayersRef = useRef<L.Layer[]>([]);
   const navTurnRef = useRef<L.CircleMarker | null>(null);
   const meRef = useRef<L.CircleMarker | null>(null);
+  const partnerMarkerRef = useRef<L.Marker | null>(null);
   const accRef = useRef<L.Circle | null>(null);
 
   const clickCb = useRef(onMapClick);
@@ -84,17 +113,24 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
   const moveCb = useRef(onGuideMove);
   const rotCb = useRef(onGuideRotate);
   const endCb = useRef(onGuideTransformEnd);
+  const freehandCb = useRef(onMapFreehandStroke);
   const guideCenterRef = useRef(guideCenter);
   const guideRotRef = useRef(guideRot);
   const draggingRef = useRef(false);
+  const mapDrawModeRef = useRef(Boolean(mapDrawMode));
+
+  const [drawStrokePts, setDrawStrokePts] = useState<XY[]>([]);
+  const drawActiveRef = useRef(false);
 
   clickCb.current = onMapClick;
   centerCb.current = onCenterChange;
   moveCb.current = onGuideMove;
   rotCb.current = onGuideRotate;
   endCb.current = onGuideTransformEnd;
+  freehandCb.current = onMapFreehandStroke;
   guideCenterRef.current = guideCenter;
   guideRotRef.current = guideRot;
+  mapDrawModeRef.current = Boolean(mapDrawMode);
 
   useEffect(() => {
     const el = elRef.current;
@@ -113,7 +149,7 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
     svgRendererRef.current = L.svg({ padding: 0.5 }).addTo(map);
     map.attributionControl.setPrefix(false);
     map.on('click', (e: L.LeafletMouseEvent) => {
-      if (draggingRef.current) return;
+      if (draggingRef.current || mapDrawModeRef.current) return;
       clickCb.current({ lat: e.latlng.lat, lng: e.latlng.lng });
     });
     map.on('moveend', () => {
@@ -142,8 +178,13 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
       guideHitRef.current = [];
       moveHandleRef.current = null;
       rotHandleRef.current = null;
+      candidateLayersRef.current = [];
       routeLayersRef.current = [];
+      pinLayersRef.current = [];
       navTurnRef.current = null;
+      meRef.current = null;
+      partnerMarkerRef.current = null;
+      accRef.current = null;
     };
   }, []);
 
@@ -168,6 +209,105 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
       map.fitBounds(b, { padding: [54, 54], maxZoom: 18 });
     },
   }));
+
+  // 지도 위 직접 그리기 모드 활성 시 드래그 잠금
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (mapDrawMode) {
+      map.dragging.disable();
+    } else {
+      map.dragging.enable();
+      setDrawStrokePts([]);
+      drawActiveRef.current = false;
+    }
+  }, [mapDrawMode]);
+
+  // 직접 그리기 캔버스 렌더
+  useEffect(() => {
+    const canvas = drawCanvasRef.current;
+    if (!canvas || !mapDrawMode) return;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const w = Math.max(1, Math.round(rect.width * dpr));
+    const h = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== w || canvas.height !== h) {
+      canvas.width = w;
+      canvas.height = h;
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, rect.width, rect.height);
+    if (drawStrokePts.length < 2) return;
+
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    ctx.moveTo(drawStrokePts[0].x, drawStrokePts[0].y);
+    for (let i = 1; i < drawStrokePts.length; i++) {
+      ctx.lineTo(drawStrokePts[i].x, drawStrokePts[i].y);
+    }
+    ctx.strokeStyle = 'rgba(200, 255, 77, 0.28)';
+    ctx.lineWidth = 14;
+    ctx.stroke();
+
+    ctx.strokeStyle = '#C8FF4D';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+  }, [drawStrokePts, mapDrawMode]);
+
+  const handleMapDrawDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const r = e.currentTarget.getBoundingClientRect();
+    drawActiveRef.current = true;
+    setDrawStrokePts([{ x: e.clientX - r.left, y: e.clientY - r.top }]);
+  }, []);
+
+  const handleMapDrawMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!drawActiveRef.current) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const p = { x: e.clientX - r.left, y: e.clientY - r.top };
+    setDrawStrokePts((prev) => {
+      const last = prev[prev.length - 1];
+      if (last && Math.hypot(p.x - last.x, p.y - last.y) < 4) return prev;
+      return [...prev, p];
+    });
+  }, []);
+
+  const handleMapDrawUp = useCallback(() => {
+    if (!drawActiveRef.current) return;
+    drawActiveRef.current = false;
+    const map = mapRef.current;
+    setDrawStrokePts((pts) => {
+      if (map && pts.length >= 4) {
+        const lls = pts.map((p) => {
+          const ll = map.containerPointToLatLng(L.point(p.x, p.y));
+          return { lat: ll.lat, lng: ll.lng };
+        });
+        const c = centerOf(lls);
+        if (c) {
+          const xys = lls.map((ll) => toXY(ll, c));
+          let minX = Infinity;
+          let maxX = -Infinity;
+          let minY = Infinity;
+          let maxY = -Infinity;
+          for (const q of xys) {
+            if (q.x < minX) minX = q.x;
+            if (q.x > maxX) maxX = q.x;
+            if (q.y < minY) minY = q.y;
+            if (q.y > maxY) maxY = q.y;
+          }
+          const span = Math.max(maxX - minX, maxY - minY, 40);
+          const k = 2 / span;
+          const norm = xys.map((q) => ({ x: q.x * k, y: q.y * k }));
+          const sizeM = Math.max(80, Math.min(2500, Math.round(span / 10) * 10));
+          freehandCb.current?.([norm], c, sizeM);
+        }
+      }
+      return [];
+    });
+  }, []);
 
   // 타일
   useEffect(() => {
@@ -234,6 +374,34 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
     auraRef.current?.setStyle({ color, weight: Math.max(6, width * 4.2) });
   }, [points, color, width]);
 
+  // 후보 비교용 보조 경로 (비선택 후보 점선)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const l of candidateLayersRef.current) map.removeLayer(l);
+    candidateLayersRef.current = [];
+    if (!candidateRoutes || candidateRoutes.length === 0) return;
+
+    const layers: L.Layer[] = [];
+    for (const c of candidateRoutes) {
+      if (c.active || c.path.length < 2) continue;
+      layers.push(
+        L.polyline(
+          c.path.map((p) => [p.lat, p.lng] as [number, number]),
+          {
+            color: '#9DB3C8',
+            weight: 3,
+            opacity: 0.32,
+            dashArray: '4 7',
+            lineCap: 'round',
+            interactive: false,
+          },
+        ).addTo(map),
+      );
+    }
+    candidateLayersRef.current = layers;
+  }, [candidateRoutes]);
+
   // 실제 도보 경로 레이어
   useEffect(() => {
     const map = mapRef.current;
@@ -291,6 +459,38 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
 
     routeLayersRef.current = layers;
   }, [walkableRoute]);
+
+  // 점 찍기 핀 마커 (1, 2, 3...)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    for (const l of pinLayersRef.current) map.removeLayer(l);
+    pinLayersRef.current = [];
+    if (!pinPoints || pinPoints.length === 0) return;
+
+    pinLayersRef.current = pinPoints.map((pt, idx) => {
+      const isClosedLoopEnd =
+        idx > 0 &&
+        idx === pinPoints.length - 1 &&
+        haversine(pt, pinPoints[0]) < 8;
+      const label = isClosedLoopEnd ? '🏁' : String(idx + 1);
+      const icon = L.divIcon({
+        className: '',
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+        html: `<div style="width:24px;height:24px;border-radius:999px;background:${
+          idx === 0 ? '#C8FF4D' : '#111A24'
+        };color:${
+          idx === 0 ? '#070A0F' : '#5EC8FF'
+        };font-weight:800;font-size:11px;display:flex;align-items:center;justify-content:center;border:2px solid #5EC8FF;box-shadow:0 2px 10px rgba(0,0,0,0.55);">${label}</div>`,
+      });
+      return L.marker([pt.lat, pt.lng], {
+        icon,
+        interactive: false,
+        zIndexOffset: 450,
+      }).addTo(map);
+    });
+  }, [pinPoints]);
 
   // 다음 회전 지점 하이라이트
   useEffect(() => {
@@ -550,13 +750,17 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
     };
   }, [guide, guideCenter, guideInteractive]);
 
-  // 내 위치
+  // 내 위치 + 동행 파트너 스프라이트
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
     if (meRef.current) {
       map.removeLayer(meRef.current);
       meRef.current = null;
+    }
+    if (partnerMarkerRef.current) {
+      map.removeLayer(partnerMarkerRef.current);
+      partnerMarkerRef.current = null;
     }
     if (accRef.current) {
       map.removeLayer(accRef.current);
@@ -575,17 +779,46 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
         interactive: false,
       }).addTo(map);
     }
-    meRef.current = L.circleMarker([myLoc.lat, myLoc.lng], {
-      radius: 7,
-      color: '#0B1017',
-      weight: 3,
-      fillColor: '#5EC8FF',
-      fillOpacity: 1,
-      interactive: false,
-    }).addTo(map);
-  }, [myLoc, accuracy]);
 
-  return <div ref={elRef} className="absolute inset-0 z-0" />;
+    if (partnerIconUrl) {
+      const icon = L.divIcon({
+        className: '',
+        iconSize: [38, 38],
+        iconAnchor: [19, 19],
+        html: `<div style="width:38px;height:38px;border-radius:999px;background:rgba(11,16,23,0.92);border:2px solid #C8FF4D;display:flex;align-items:center;justify-content:center;box-shadow:0 4px 14px rgba(0,0,0,0.55);"><img src="${partnerIconUrl}" alt="" style="width:26px;height:26px;image-rendering:pixelated;" /></div>`,
+      });
+      partnerMarkerRef.current = L.marker([myLoc.lat, myLoc.lng], {
+        icon,
+        interactive: false,
+        zIndexOffset: 650,
+      }).addTo(map);
+    } else {
+      meRef.current = L.circleMarker([myLoc.lat, myLoc.lng], {
+        radius: 7,
+        color: '#0B1017',
+        weight: 3,
+        fillColor: '#5EC8FF',
+        fillOpacity: 1,
+        interactive: false,
+      }).addTo(map);
+    }
+  }, [myLoc, accuracy, partnerIconUrl]);
+
+  return (
+    <div className="absolute inset-0 z-0">
+      <div ref={elRef} className="absolute inset-0 z-0" />
+      {mapDrawMode && (
+        <canvas
+          ref={drawCanvasRef}
+          onPointerDown={handleMapDrawDown}
+          onPointerMove={handleMapDrawMove}
+          onPointerUp={handleMapDrawUp}
+          onPointerCancel={handleMapDrawUp}
+          className="absolute inset-0 z-10 h-full w-full cursor-crosshair touch-none"
+        />
+      )}
+    </div>
+  );
 });
 
 export default MapView;

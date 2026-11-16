@@ -5,6 +5,12 @@ export type PathPoint = LatLng & { t: number; brk?: boolean };
 
 export type XY = { x: number; y: number };
 
+export type WalkFeedback = {
+  rating: 'great' | 'good' | 'meh';
+  tags: string[];
+  note?: string;
+};
+
 export type Walk = {
   id: string;
   title: string;
@@ -15,6 +21,10 @@ export type Walk = {
   guideId: string | null;
   distanceM: number;
   durationMs: number;
+  paceId?: 'slow' | 'walk' | 'jog';
+  partnerId?: string;
+  courseKind?: 'free' | 'guide' | 'sketch' | 'ai' | 'pin';
+  feedback?: WalkFeedback;
 };
 
 const R = 6378137;

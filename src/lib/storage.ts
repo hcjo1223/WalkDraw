@@ -149,3 +149,83 @@ export function newId(): string {
   if (c && 'randomUUID' in c) return c.randomUUID();
   return `w_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
+
+/* ---------------- 찜한 코스 (북마크) ---------------- */
+
+const SAVED_ROUTES_KEY = 'walkdraw.routes.v1';
+
+export type SavedRoute = {
+  id: string;
+  title: string;
+  createdAt: number;
+  path: Array<{ lat: number; lng: number }>;
+  totalDistanceM: number;
+  similarity?: number;
+  kind: 'sketch' | 'ai' | 'pin' | 'guide';
+  isRealRoad: boolean;
+};
+
+export function listSavedRoutes(): SavedRoute[] {
+  try {
+    const raw = localStorage.getItem(SAVED_ROUTES_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? (arr as SavedRoute[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveFavoriteRoute(route: SavedRoute): SavedRoute[] {
+  const list = listSavedRoutes().filter((r) => r.id !== route.id);
+  list.unshift(route);
+  try {
+    localStorage.setItem(SAVED_ROUTES_KEY, JSON.stringify(list.slice(0, 60)));
+  } catch {
+    /* ignore */
+  }
+  return list;
+}
+
+export function deleteSavedRoute(id: string): SavedRoute[] {
+  const list = listSavedRoutes().filter((r) => r.id !== id);
+  try {
+    localStorage.setItem(SAVED_ROUTES_KEY, JSON.stringify(list));
+  } catch {
+    /* ignore */
+  }
+  return list;
+}
+
+/* ---------------- 파트너 도감 상태 ---------------- */
+
+const PARTNERS_KEY = 'walkdraw.partners.v1';
+
+export type PartnerState = {
+  activeId: string | null;
+  counts: Record<string, number>;
+  starterClaimed: boolean;
+};
+
+export function loadPartnerState(): PartnerState {
+  try {
+    const raw = localStorage.getItem(PARTNERS_KEY);
+    if (!raw) return { activeId: null, counts: {}, starterClaimed: false };
+    const parsed = JSON.parse(raw) as PartnerState;
+    return {
+      activeId: parsed.activeId ?? null,
+      counts: parsed.counts ?? {},
+      starterClaimed: Boolean(parsed.starterClaimed),
+    };
+  } catch {
+    return { activeId: null, counts: {}, starterClaimed: false };
+  }
+}
+
+export function savePartnerState(state: PartnerState): void {
+  try {
+    localStorage.setItem(PARTNERS_KEY, JSON.stringify(state));
+  } catch {
+    /* ignore */
+  }
+}
