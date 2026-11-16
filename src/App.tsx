@@ -142,7 +142,9 @@ export default function App() {
         mapRef.current?.flyTo(p, 17);
       },
       () => {
-        /* 권한 없음 — 지도 기본 위치 유지 */
+        /* 권한 없음 — 실내 테스트가 바로 가능하도록 시뮬레이션 모드로 안내 */
+        setSim(true);
+        showToast('위치를 쓸 수 없어 시뮬레이션 모드로 시작했어요. 지도를 눌러 그려 보세요.');
       },
       { enableHighAccuracy: true, timeout: 9000, maximumAge: 30000 },
     );
