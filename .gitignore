@@ -1,0 +1,16 @@
+# 의존성
+node_modules
+dist
+dist-single
+.DS_Store
+
+# 로그
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.local
+
+# 에디터
+.vscode/*
+!.vscode/extensions.json
+.idea

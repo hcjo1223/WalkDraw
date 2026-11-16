@@ -1,0 +1,20 @@
+{
+  "name": "WalkDraw · 발자취 스케치",
+  "short_name": "WalkDraw",
+  "description": "걸어서 그리는 GPS 드로잉. 산책 경로로 그림을 그리고 포스터 카드와 타임랩스로 저장하세요.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#070A0F",
+  "theme_color": "#070A0F",
+  "lang": "ko",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
