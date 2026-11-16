@@ -20,7 +20,7 @@
 ## 스택
 
 - Vite + React 19 + TypeScript + Tailwind CSS v4
-- Leaflet + CARTO/OpenStreetMap 타일 (API 키 불필요, 다크/밝은 지도 토글)
+- Leaflet + OpenStreetMap 타일 (API 키 불필요) — 다크 지도는 CSS 필터로 반전해 사용, 다크/밝은 지도 토글
 - 포스터는 **HTML5 Canvas 직접 렌더링** — 타일을 캡처하지 않으므로 CORS 이슈가 없습니다
 - PWA 매니페스트 (`standalone`, iPhone 홈 화면 추가 대응)
 
