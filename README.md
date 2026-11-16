@@ -50,13 +50,21 @@ git push -u origin main
 
 ## 배포
 
-### GitHub Pages (자동)
+### GitHub Pages (현재 이 방식으로 배포 중)
 
-1. 저장소를 public으로 만들고 `main` 브랜치에 push
-2. **Settings → Pages → Build and deployment → Source: GitHub Actions** 선택
-3. `.github/workflows/deploy.yml`이 빌드·배포합니다 → `https://hcjo1223.github.io/WalkDraw/`
+**라이브:** <https://hcjo1223.github.io/WalkDraw/>
 
-`vite.config.ts`의 `base: './'` 덕분에 하위 경로 배포에서도 자산 경로가 깨지지 않습니다.
+- 빌드 결과(`dist/`)를 `gh-pages` 브랜치 루트에 올리고, **Settings → Pages → Source: Deploy from a branch → `gh-pages` / (root)** 로 서빙합니다.
+- 갱신 방법:
+
+```bash
+npm run build
+# dist/ 내용을 gh-pages 브랜치에 커밋·푸시
+```
+
+`vite.config.ts`의 `base: './'` 덕분에 하위 경로(`/WalkDraw/`) 배포에서도 자산 경로가 깨지지 않습니다.
+
+> 푸시할 때마다 자동 빌드·배포하려면 `.github/workflows/deploy.yml`을 추가하고 Pages 소스를 **GitHub Actions**로 바꾸면 됩니다. 단, 워크플로 파일은 저장소 쓰기 권한에 `Workflows` 권한이 있어야 push할 수 있습니다(현재 Pickle GitHub App에는 이 권한이 없어 워크플로 파일을 올리지 못했습니다).
 
 ### Vercel
 
