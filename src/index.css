@@ -56,6 +56,14 @@ button {
   outline: none;
 }
 
+/* 다크 지도: OSM 타일을 반전시켜 다크 스타일로 씁니다(API 키 불필요).
+   다크 레이어만 a./b./c. 서브도메인을 쓰므로 아래 선택자가 다크 모드에만 적용됩니다. */
+.leaflet-tile-pane img.leaflet-tile[src*="//a.tile.openstreetmap.org"],
+.leaflet-tile-pane img.leaflet-tile[src*="//b.tile.openstreetmap.org"],
+.leaflet-tile-pane img.leaflet-tile[src*="//c.tile.openstreetmap.org"] {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.92) saturate(0.8);
+}
+
 /* ---------- surfaces ---------- */
 .glass {
   background: rgba(11, 16, 23, 0.82);

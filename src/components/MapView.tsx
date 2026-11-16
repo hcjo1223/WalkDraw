@@ -2,13 +2,16 @@ import L from 'leaflet';
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import { softenLatLngSegments, type LatLng, type PathPoint } from '../lib/geo';
 
+// CARTO 베이스맵은 2025년부터 API 키 없이는 워터마크 타일만 내려줍니다.
+// 그래서 키가 필요 없는 OSM 타일을 쓰고, 다크 스타일은 CSS 필터(index.css)로 만듭니다.
+// 다크 레이어만 {s} 서브도메인(a./b./c.)이 붙어, 필터 선택자가 두 레이어를 구분합니다.
 const TILES = {
-  dark: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-  voyager: 'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+  dark: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+  voyager: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
 };
 
 const ATTRIBUTION =
-  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions" target="_blank" rel="noreferrer">CARTO</a>';
+  '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a>';
 
 export type MapHandle = {
   zoomIn: () => void;
