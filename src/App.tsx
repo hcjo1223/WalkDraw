@@ -49,6 +49,8 @@ import {
   fetchWalkableRoute,
   generateAiCandidates,
   generateSketchCandidates,
+  fetchRouteForDistance,
+  roundGuideSize,
   hydrateSavedRoute,
   searchPlaces,
   turnIcon,
@@ -207,6 +209,8 @@ export default function App() {
   const titleTimer = useRef(0);
   const transformingRef = useRef(false);
   const navPrevDistRef = useRef(0);
+  /** 길이 보정으로 바꾼 도안 크기: 이 크기로 인한 경로 재탐색은 건너뛴다 */
+  const calibratedSizeRef = useRef<number | null>(null);
   const lastSpokenStepRef = useRef<number | null>(null);
   const lastKmSpokenRef = useRef(0);
 
@@ -424,23 +428,42 @@ export default function App() {
       return;
     }
     if (transformingRef.current) return;
+    if (calibratedSizeRef.current === guideSize) {
+      // 바로 앞 탐색이 목표 거리에 맞춰 크기를 고친 것: 경로는 이미 그 크기로 받아 둠
+      calibratedSizeRef.current = null;
+      return;
+    }
+    calibratedSizeRef.current = null;
 
     const ctrl = new AbortController();
     const timer = window.setTimeout(async () => {
       setRoutingBusy(true);
       try {
-        const groups = xyGroupsSampleWaypoints(
-          effectiveSubpaths,
-          effectiveGuideCenter,
-          guideSize,
-          guideRot,
-          12,
-        );
-        const route = await fetchWalkableRoute(groups, myLocRef.current, ctrl.signal);
+        const groupsFor = (sz: number) =>
+          xyGroupsSampleWaypoints(effectiveSubpaths, effectiveGuideCenter, sz, guideRot, 12);
+        let route: WalkableRoute;
+        let nextSize = guideSize;
+        if (autoSizeToGoal) {
+          // 실제 보행로 길이가 목표 거리(±10%)에 오도록 도안 크기를 보정
+          const r = await fetchRouteForDistance(
+            (s) => groupsFor(roundGuideSize(guideSize * s)),
+            targetDistanceM,
+            myLocRef.current,
+            ctrl.signal,
+          );
+          route = r.route;
+          nextSize = roundGuideSize(guideSize * r.scale);
+        } else {
+          route = await fetchWalkableRoute(groupsFor(guideSize), myLocRef.current, ctrl.signal);
+        }
         if (!ctrl.signal.aborted) {
           setWalkableRoute(route);
           navPrevDistRef.current = 0;
           lastSpokenStepRef.current = null;
+          if (nextSize !== guideSize) {
+            calibratedSizeRef.current = nextSize;
+            setGuideSize(nextSize);
+          }
         }
       } catch {
         /* 취소됨 */
@@ -462,6 +485,8 @@ export default function App() {
     guideRot,
     walkableNavEnabled,
     routeRefreshSeq,
+    autoSizeToGoal,
+    targetDistanceM,
   ]);
 
   // 점 찍기 모드 자동 연결
@@ -635,9 +660,12 @@ export default function App() {
         guideSize,
         guideRot,
         myLocRef.current,
+        undefined,
+        autoSizeToGoal ? targetDistanceM : undefined,
       );
       setCandidates(list);
       if (list[0]) {
+        if (list[0].sizeM) setGuideSize(list[0].sizeM);
         setSelectedCandId(list[0].id);
         setWalkableRoute(list[0].route);
         setRouteLocked(true);
@@ -652,7 +680,16 @@ export default function App() {
     } finally {
       setCandBusy(false);
     }
-  }, [effectiveSubpaths, effectiveGuideCenter, guideSize, guideRot, fitRouteInView, showToast]);
+  }, [
+    effectiveSubpaths,
+    effectiveGuideCenter,
+    guideSize,
+    guideRot,
+    autoSizeToGoal,
+    targetDistanceM,
+    fitRouteInView,
+    showToast,
+  ]);
 
   const handleSearchPlaces = useCallback(async () => {
     const q = aiQuery.trim();
@@ -703,6 +740,9 @@ export default function App() {
       setSelectedCandId(c.id);
       setWalkableRoute(c.route);
       setRouteLocked(true);
+      // 그림 후보: 지도 위 도안도 이 후보의 크기·회전으로 맞춘다
+      if (c.sizeM) setGuideSize(c.sizeM);
+      if (c.rotDeg !== undefined) setGuideRot(c.rotDeg);
       navPrevDistRef.current = 0;
       lastSpokenStepRef.current = null;
       fitRouteInView(c.route.path);
@@ -2356,6 +2396,8 @@ export default function App() {
                     step={10}
                     display={`${guideSize} m`}
                     onChange={(v) => {
+                      // 직접 크기를 고르면 자동 맞추기를 끈다 (보정이 사용자의 값을 덮어쓰지 않도록)
+                      setAutoSizeToGoal(false);
                       setRouteLocked(false);
                       setGuideSize(v);
                     }}
