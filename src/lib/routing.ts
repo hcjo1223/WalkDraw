@@ -714,21 +714,21 @@ export async function generateAiCandidates(
 ): Promise<RouteCandidate[]> {
   const { origin, waypoint, roundTrip, targetDistM } = opts;
 
-  const makeLoopWaypoints = (bearingDeg: number, distM: number): LatLng[] => {
-    const side = Math.max(80, distM / (3.4 * 1.25));
+  const makeLoopWaypoints = (bearingDeg: number, distM: number, scale = 1): LatLng[] => {
+    const side = Math.max(55, (distM * scale) / 4.9);
     const b0 = (bearingDeg * Math.PI) / 180;
-    const b1 = ((bearingDeg + 62) * Math.PI) / 180;
+    const b1 = ((bearingDeg + 54) * Math.PI) / 180;
     const p1 = toLatLng({ x: Math.sin(b0) * side, y: Math.cos(b0) * side }, origin);
-    const p2 = toLatLng({ x: Math.sin(b1) * side * 0.95, y: Math.cos(b1) * side * 0.95 }, origin);
+    const p2 = toLatLng({ x: Math.sin(b1) * side * 0.94, y: Math.cos(b1) * side * 0.94 }, origin);
     return [origin, p1, p2, origin];
   };
 
-  const makeWaypointCandidates = (): Array<{ id: string; label: string; tag: string; wps: LatLng[] }> => {
+  const makeWaypointCandidates = (): Array<{ id: string; tag: string; wps: LatLng[] }> => {
     if (!waypoint) {
       return [
-        { id: 'ai1', label: '추천 산책 코스', tag: '순환', wps: makeLoopWaypoints(25, targetDistM) },
-        { id: 'ai2', label: '대안 산책 코스 1', tag: '순환', wps: makeLoopWaypoints(145, targetDistM) },
-        { id: 'ai3', label: '대안 산책 코스 2', tag: '순환', wps: makeLoopWaypoints(265, targetDistM) },
+        { id: 'ai1', tag: '북동 순환', wps: makeLoopWaypoints(25, targetDistM, 1.0) },
+        { id: 'ai2', tag: '남동 순환', wps: makeLoopWaypoints(145, targetDistM, 0.92) },
+        { id: 'ai3', tag: '서쪽 순환', wps: makeLoopWaypoints(265, targetDistM, 1.08) },
       ];
     }
 
@@ -739,36 +739,44 @@ export async function generateAiCandidates(
     const px = -uy;
     const py = ux;
     const mid = { x: wpXY.x * 0.5, y: wpXY.y * 0.5 };
-    const lateral = Math.max(90, Math.min(baseDist * 0.48, (targetDistM - baseDist * 2) * 0.28));
+    const lateral = Math.max(70, Math.min(baseDist * 0.45, (targetDistM - baseDist * 2) * 0.25));
 
     if (roundTrip) {
       const leftDetour = toLatLng({ x: mid.x + px * lateral, y: mid.y + py * lateral }, origin);
       const rightDetour = toLatLng({ x: mid.x - px * lateral, y: mid.y - py * lateral }, origin);
       return [
-        { id: 'ai1', label: '추천 산책 코스', tag: '왕복 순환', wps: [origin, waypoint, leftDetour, origin] },
-        { id: 'ai2', label: '대안 산책 코스 1', tag: '반대쪽 순환', wps: [origin, rightDetour, waypoint, origin] },
-        { id: 'ai3', label: '대안 산책 코스 2', tag: '직통 왕복', wps: [origin, waypoint, origin] },
+        { id: 'ai1', tag: '왕복 순환', wps: [origin, waypoint, leftDetour, origin] },
+        { id: 'ai2', tag: '반대 순환', wps: [origin, rightDetour, waypoint, origin] },
+        { id: 'ai3', tag: '직통 왕복', wps: [origin, waypoint, origin] },
       ];
     }
 
     const detourL = toLatLng({ x: mid.x + px * lateral, y: mid.y + py * lateral }, origin);
     const detourR = toLatLng({ x: mid.x - px * lateral, y: mid.y - py * lateral }, origin);
     return [
-      { id: 'ai1', label: '추천 산책 코스', tag: '편도', wps: [origin, waypoint] },
-      { id: 'ai2', label: '대안 산책 코스 1', tag: '여유 경유', wps: [origin, detourL, waypoint] },
-      { id: 'ai3', label: '대안 산책 코스 2', tag: '우회 경유', wps: [origin, detourR, waypoint] },
+      { id: 'ai1', tag: '직통 편도', wps: [origin, waypoint] },
+      { id: 'ai2', tag: '여유 경유', wps: [origin, detourL, waypoint] },
+      { id: 'ai3', tag: '우회 경유', wps: [origin, detourR, waypoint] },
     ];
   };
 
   const defs = makeWaypointCandidates();
-  return Promise.all(
+  const routes = await Promise.all(
     defs.map(async (d) => ({
       id: d.id,
-      label: d.label,
       tag: d.tag,
       route: await fetchWalkableRoute([d.wps], null, signal),
     })),
   );
+  routes.sort(
+    (a, b) =>
+      Math.abs(a.route.totalDistanceM - targetDistM) -
+      Math.abs(b.route.totalDistanceM - targetDistM),
+  );
+  return routes.map((r, idx) => ({
+    ...r,
+    label: idx === 0 ? '추천 산책 코스' : `대안 산책 코스 ${idx}`,
+  }));
 }
 
 /** 찜한 코스 경로를 네비게이션 가능한 WalkableRoute로 복원 */

@@ -28,7 +28,7 @@ export type MapHandle = {
   zoomOut: () => void;
   flyTo: (ll: LatLng, zoom?: number) => void;
   center: () => LatLng | null;
-  fit: (lls: LatLng[]) => void;
+  fit: (lls: LatLng[], pad?: { top?: number; bottom?: number }) => void;
 };
 
 export type CandidatePreview = {
@@ -56,6 +56,7 @@ type Props = {
   tile: 'dark' | 'voyager';
   onMapClick: (ll: LatLng) => void;
   onCenterChange: (ll: LatLng) => void;
+  onMapDragStart?: () => void;
   onGuideMove?: (ll: LatLng) => void;
   onGuideRotate?: (deg: number) => void;
   onGuideTransformEnd?: () => void;
@@ -82,6 +83,7 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
     tile,
     onMapClick,
     onCenterChange,
+    onMapDragStart,
     onGuideMove,
     onGuideRotate,
     onGuideTransformEnd,
@@ -110,6 +112,7 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
 
   const clickCb = useRef(onMapClick);
   const centerCb = useRef(onCenterChange);
+  const dragStartCb = useRef(onMapDragStart);
   const moveCb = useRef(onGuideMove);
   const rotCb = useRef(onGuideRotate);
   const endCb = useRef(onGuideTransformEnd);
@@ -124,6 +127,7 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
 
   clickCb.current = onMapClick;
   centerCb.current = onCenterChange;
+  dragStartCb.current = onMapDragStart;
   moveCb.current = onGuideMove;
   rotCb.current = onGuideRotate;
   endCb.current = onGuideTransformEnd;
@@ -151,6 +155,9 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
     map.on('click', (e: L.LeafletMouseEvent) => {
       if (draggingRef.current || mapDrawModeRef.current) return;
       clickCb.current({ lat: e.latlng.lat, lng: e.latlng.lng });
+    });
+    map.on('dragstart', () => {
+      if (!draggingRef.current) dragStartCb.current?.();
     });
     map.on('moveend', () => {
       const c = map.getCenter();
@@ -202,11 +209,17 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
       const c = map.getCenter();
       return { lat: c.lat, lng: c.lng };
     },
-    fit: (lls) => {
+    fit: (lls, pad) => {
       const map = mapRef.current;
       if (!map || lls.length === 0) return;
       const b = L.latLngBounds(lls.map((p) => [p.lat, p.lng] as [number, number]));
-      map.fitBounds(b, { padding: [54, 54], maxZoom: 18 });
+      const top = pad?.top ?? 80;
+      const bottom = pad?.bottom ?? 80;
+      map.fitBounds(b, {
+        paddingTopLeft: [28, top],
+        paddingBottomRight: [28, bottom],
+        maxZoom: 18,
+      });
     },
   }));
 

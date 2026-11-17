@@ -102,6 +102,7 @@ type AppTab = 'walk' | 'records' | 'partners';
 type CourseTab = 'sketch' | 'ai' | 'pin' | 'free';
 type Page = 'main' | 'guide' | 'goal' | 'style';
 type View = 'map' | 'card';
+type SheetSnap = 'peek' | 'half' | 'full';
 
 type FinishDraft = {
   walk: Walk;
@@ -144,6 +145,7 @@ export default function App() {
   const [aiWaypoint, setAiWaypoint] = useState<PlaceResult | null>(null);
   const [aiRoundTrip, setAiRoundTrip] = useState(true);
   const [aiBusy, setAiBusy] = useState(false);
+  const [aiFormOpen, setAiFormOpen] = useState(true);
 
   // 점 찍기 코스 상태
   const [pinPoints, setPinPoints] = useState<LatLng[]>([]);
@@ -169,6 +171,12 @@ export default function App() {
   const [navCollapsed, setNavCollapsed] = useState(false);
   const [ttsEnabled, setTtsEnabled] = useState(false);
   const [screenLocked, setScreenLocked] = useState(false);
+
+  // 하단 시트 접기/중간/펼침 + 드래그 제스처
+  const [sheetSnap, setSheetSnap] = useState<SheetSnap>('half');
+  const [sheetDragY, setSheetDragY] = useState(0);
+  const [sheetDragging, setSheetDragging] = useState(false);
+  const sheetDragRef = useRef<{ pointerId: number; startY: number } | null>(null);
 
   // 지도 · 데이터 상태
   const [mapCenter, setMapCenter] = useState<LatLng>(DEFAULT_CENTER);
@@ -574,6 +582,7 @@ export default function App() {
       setSelectedCandId(null);
       setRouteLocked(false);
       setCourseTab('sketch');
+      setSheetSnap('half');
       showToast(`${label} 도안을 지도에 올렸어요. [코스 3개 찾기]로 길에 맞춰보세요!`);
     },
     [
@@ -601,6 +610,16 @@ export default function App() {
     [effectiveSubpaths, autoSizeToGoal, walkableNavEnabled],
   );
 
+  const fitRouteInView = useCallback(
+    (path: LatLng[], snap: SheetSnap = sheetSnap) => {
+      if (path.length < 2) return;
+      const topPad = mode === 'idle' ? 108 : 136;
+      const bottomPad = snap === 'peek' ? 190 : snap === 'full' ? 460 : 370;
+      mapRef.current?.fit(path, { top: topPad, bottom: bottomPad });
+    },
+    [mode, sheetSnap],
+  );
+
   /* ---------------- 3코스 후보 생성 (그림 / AI) ---------------- */
 
   const handleFindSketchCandidates = useCallback(async () => {
@@ -624,9 +643,8 @@ export default function App() {
         setRouteLocked(true);
         navPrevDistRef.current = 0;
         lastSpokenStepRef.current = null;
-        if (list[0].route.path.length >= 2) {
-          mapRef.current?.fit(list[0].route.path);
-        }
+        setSheetSnap('half');
+        fitRouteInView(list[0].route.path, 'half');
       }
       showToast('그림과 닮은 실제 보행 코스 3개를 찾았어요!');
     } catch {
@@ -634,7 +652,7 @@ export default function App() {
     } finally {
       setCandBusy(false);
     }
-  }, [effectiveSubpaths, effectiveGuideCenter, guideSize, guideRot, showToast]);
+  }, [effectiveSubpaths, effectiveGuideCenter, guideSize, guideRot, fitRouteInView, showToast]);
 
   const handleSearchPlaces = useCallback(async () => {
     const q = aiQuery.trim();
@@ -668,7 +686,9 @@ export default function App() {
         setRouteLocked(true);
         navPrevDistRef.current = 0;
         lastSpokenStepRef.current = null;
-        mapRef.current?.fit(list[0].route.path);
+        setAiFormOpen(false);
+        setSheetSnap('half');
+        fitRouteInView(list[0].route.path, 'half');
       }
       showToast('AI가 3가지 추천 산책 코스를 만들었어요!');
     } catch {
@@ -676,7 +696,7 @@ export default function App() {
     } finally {
       setAiBusy(false);
     }
-  }, [mapCenter, aiWaypoint, aiRoundTrip, targetDistanceM, showToast]);
+  }, [mapCenter, aiWaypoint, aiRoundTrip, targetDistanceM, fitRouteInView, showToast]);
 
   const selectCandidate = useCallback(
     (c: RouteCandidate) => {
@@ -685,9 +705,9 @@ export default function App() {
       setRouteLocked(true);
       navPrevDistRef.current = 0;
       lastSpokenStepRef.current = null;
-      if (c.route.path.length >= 2) mapRef.current?.fit(c.route.path);
+      fitRouteInView(c.route.path);
     },
-    [],
+    [fitRouteInView],
   );
 
   const bookmarkCurrentRoute = useCallback(
@@ -775,6 +795,71 @@ export default function App() {
     showToast,
   ]);
 
+  const openSheetPage = useCallback((next: Page) => {
+    setPage(next);
+    setSheetSnap(next === 'main' ? 'half' : 'full');
+  }, []);
+
+  const toggleSheetPeek = useCallback(() => {
+    if (page !== 'main') {
+      setPage('main');
+      setSheetSnap('half');
+      return;
+    }
+    setSheetSnap((prev) => (prev === 'peek' ? 'half' : 'peek'));
+  }, [page]);
+
+  const effectiveSnap: SheetSnap = page !== 'main' ? 'full' : sheetSnap;
+
+  const onSheetHandleDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('button')) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    sheetDragRef.current = { pointerId: e.pointerId, startY: e.clientY };
+    setSheetDragging(true);
+    setSheetDragY(0);
+  }, []);
+
+  const onSheetHandleMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const st = sheetDragRef.current;
+      if (!st || st.pointerId !== e.pointerId) return;
+      const dy = e.clientY - st.startY;
+      const resist =
+        (effectiveSnap === 'peek' && dy > 0) || (effectiveSnap === 'full' && dy < 0) ? 0.24 : 1;
+      setSheetDragY(Math.max(-220, Math.min(220, dy * resist)));
+    },
+    [effectiveSnap],
+  );
+
+  const onSheetHandleUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const st = sheetDragRef.current;
+      if (!st || st.pointerId !== e.pointerId) return;
+      sheetDragRef.current = null;
+      const dy = e.clientY - st.startY;
+      setSheetDragging(false);
+      setSheetDragY(0);
+
+      if (Math.abs(dy) < 8) {
+        toggleSheetPeek();
+        return;
+      }
+      if (page !== 'main') {
+        if (dy > 64) {
+          setPage('main');
+          setSheetSnap('half');
+        }
+        return;
+      }
+      if (dy > 44) {
+        setSheetSnap((prev) => (prev === 'full' ? 'half' : 'peek'));
+      } else if (dy < -44) {
+        setSheetSnap((prev) => (prev === 'peek' ? 'half' : 'full'));
+      }
+    },
+    [page, toggleSheetPeek],
+  );
+
   const beginWalk = useCallback(() => {
     setPoints([]);
     setNow(Date.now());
@@ -787,6 +872,7 @@ export default function App() {
     setScreenLocked(false);
     setMode('recording');
     setPage('main');
+    setSheetSnap('half');
     setDraft(null);
     clearDraft();
     if (!sim && !window.isSecureContext) {
@@ -1005,6 +1091,7 @@ export default function App() {
     (next: CourseTab) => {
       setCourseTab(next);
       setPage('main');
+      setSheetSnap('half');
       setMapDrawMode(false);
       setCandidates([]);
       setSelectedCandId(null);
@@ -1021,6 +1108,7 @@ export default function App() {
         setGuideId(null);
         setCustomStrokes(null);
         setWalkableRoute(null);
+        setAiFormOpen(true);
       }
     },
     [pinPoints.length],
@@ -1089,6 +1177,11 @@ export default function App() {
           tile={tile}
           onMapClick={onMapClick}
           onCenterChange={setMapCenter}
+          onMapDragStart={() => {
+            if (idle && page === 'main') {
+              setSheetSnap((prev) => (prev === 'full' ? 'half' : prev === 'half' ? 'peek' : prev));
+            }
+          }}
           onGuideMove={handleGuideMove}
           onGuideRotate={handleGuideRotate}
           onGuideTransformEnd={handleGuideTransformEnd}
@@ -1213,7 +1306,10 @@ export default function App() {
             <div className="pointer-events-auto flex items-center gap-2 rounded-full border border-lime/40 bg-[#0B1017]/95 px-4 py-2 text-xs font-bold text-lime shadow-lg">
               <span>✍️ 지도 위에 한 번에 쓱 그려보세요</span>
               <button
-                onClick={() => setMapDrawMode(false)}
+                onClick={() => {
+                  setMapDrawMode(false);
+                  setSheetSnap('half');
+                }}
                 className="rounded-full bg-white/10 px-2.5 py-0.5 text-[11px] text-zinc-200"
               >
                 취소
@@ -1222,15 +1318,19 @@ export default function App() {
           </div>
         )}
 
-        {/* Eyes-Free 실제 도보 네비게이션 HUD 배너 */}
-        {!mapDrawMode && (walkableRoute || routingBusy) && (
-          <div
-            className={`pointer-events-none absolute inset-x-0 z-20 pl-3 pr-14 ${
-              idle && page === 'main'
-                ? 'top-[calc(env(safe-area-inset-top)+92px)]'
-                : 'top-[calc(env(safe-area-inset-top)+52px)]'
-            }`}
-          >
+        {/* 대기 중 길 탐색 로딩 뱃지 (지도를 가리지 않는 슬림 필) */}
+        {idle && !mapDrawMode && routingBusy && (
+          <div className="pointer-events-none absolute left-3 top-[calc(env(safe-area-inset-top)+92px)] z-20">
+            <div className="flex items-center gap-1.5 rounded-full border border-sky/30 bg-[#0B1017]/90 px-3 py-1 text-[11px] font-semibold text-sky shadow backdrop-blur-md">
+              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky" />
+              ⏳ 도보 길 탐색 중…
+            </div>
+          </div>
+        )}
+
+        {/* Eyes-Free 실제 도보 네비게이션 HUD 배너 (산책 중/일시정지 전용) */}
+        {(rec || paused) && !mapDrawMode && (walkableRoute || routingBusy) && (
+          <div className="pointer-events-none absolute inset-x-0 top-[calc(env(safe-area-inset-top)+52px)] z-20 pl-3 pr-14">
             <div className="pointer-events-auto max-w-md rounded-2xl border border-white/12 bg-[#0B1017]/90 px-3 py-2.5 shadow-xl backdrop-blur-md">
               {routingBusy && !walkableRoute ? (
                 <div className="flex items-center gap-2 text-[12px] text-sky">
@@ -1335,13 +1435,7 @@ export default function App() {
                         </div>
                       ) : (
                         <div className="flex items-center justify-between text-[10px] text-zinc-500">
-                          <span>
-                            {courseTab === 'pin'
-                              ? '지도 탭으로 경유점 추가'
-                              : courseTab === 'sketch' && hasShape
-                                ? '✥ 드래그 이동 · ↻ 핸들 회전'
-                                : '선택한 코스 준비 완료'}
-                          </span>
+                          <span>선택한 코스 안내</span>
                           <span>경유 안내 {walkableRoute.steps.length}구간</span>
                         </div>
                       )}
@@ -1353,457 +1447,677 @@ export default function App() {
           </div>
         )}
 
-        {/* 하단 컨트롤 시트 */}
+        {/* 하단 컨트롤 시트 (드래그 + 3단계 접기/펼치기 지원) */}
         <div
-          className={`sheet no-select absolute inset-x-0 z-30 rounded-t-[26px] px-4 pt-2 ${
+          style={{
+            transform: sheetDragY ? `translateY(${Math.round(sheetDragY)}px)` : undefined,
+            transition: sheetDragging
+              ? 'none'
+              : 'transform 0.24s cubic-bezier(0.22, 1, 0.36, 1)',
+          }}
+          className={`sheet no-select absolute inset-x-0 z-30 flex flex-col rounded-t-[26px] px-4 pt-1.5 ${
             showBottomTabs
-              ? 'bottom-[calc(64px+env(safe-area-inset-bottom))] pb-3'
+              ? 'bottom-[calc(64px+env(safe-area-inset-bottom))] pb-2.5'
               : 'bottom-0 pb-[max(0.85rem,env(safe-area-inset-bottom))]'
           }`}
         >
-          <div className="mx-auto mb-2 h-1 w-10 rounded-full bg-white/20" />
-
-          {page === 'main' && (
-            <>
-              {/* 이어 그리기 배너 */}
-              {draft && idle && (
-                <div className="mb-2.5 rounded-2xl border border-lime/25 bg-lime/[0.08] p-2.5">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <div className="text-[12px] font-semibold text-lime">이어 그릴 산책이 있어요</div>
-                      <div className="text-[11px] text-zinc-400">
-                        {formatDistance(pathDistance(draft.points))} · 지점 {draft.points.length}개
-                      </div>
-                    </div>
-                    <div className="flex gap-1.5">
-                      <button
-                        onClick={() => {
-                          setPoints(draft.points);
-                          setColor(draft.color);
-                          setWidth(draft.width);
-                          setGuideId(draft.guideId);
-                          elapsedRef.current = Math.max(0, Date.now() - draft.startedAt);
-                          startRef.current = 0;
-                          setMode('paused');
-                          setDraft(null);
-                          showToast('이어서 그릴 수 있어요. 재개를 눌러 주세요.');
-                        }}
-                        className="rounded-xl bg-lime px-3 py-1.5 text-[11px] font-bold text-[#0B1015]"
-                      >
-                        이어서
-                      </button>
-                      <button
-                        onClick={() => {
-                          clearDraft();
-                          setDraft(null);
-                        }}
-                        className="rounded-xl border border-white/10 px-2.5 py-1.5 text-[11px] text-zinc-400"
-                      >
-                        버리기
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* 3코스 후보 카드 비교 (그림·AI 추천 시) */}
-              {idle && candidates.length > 0 && (
-                <div className="mb-2.5 flex gap-2 overflow-x-auto scroll-x pb-0.5">
-                  {candidates.map((c) => {
-                    const active = c.id === selectedCandId;
-                    return (
-                      <div
-                        key={c.id}
-                        onClick={() => selectCandidate(c)}
-                        className={`min-w-[178px] shrink-0 cursor-pointer rounded-2xl border p-2.5 transition ${
-                          active
-                            ? 'border-lime/70 bg-lime/[0.11]'
-                            : 'border-white/10 bg-white/[0.03]'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="truncate text-[11px] font-extrabold text-white">
-                            {c.label}
-                          </span>
-                          {c.similarity !== undefined ? (
-                            <span className="shrink-0 rounded-full bg-mint/15 px-1.5 py-0.5 text-[10px] font-bold text-mint">
-                              닮음 {c.similarity}%
-                            </span>
-                          ) : (
-                            <span className="shrink-0 rounded-full bg-sky/15 px-1.5 py-0.5 text-[10px] font-bold text-sky">
-                              {c.tag}
-                            </span>
-                          )}
-                        </div>
-                        <div className="mt-1 flex items-center justify-between text-[11px] text-zinc-300">
-                          <span className="font-bold tabular-nums">
-                            {formatDistance(c.route.totalDistanceM)}
-                          </span>
-                          <span className="text-[10px] text-zinc-400">
-                            {activePace.emoji}{' '}
-                            {formatEstimatedMinutes(
-                              calcMinutesFromDistance(c.route.totalDistanceM, paceId),
-                            )}
-                          </span>
-                        </div>
-                        <div className="mt-2 flex items-center justify-between gap-1.5">
-                          <span className="text-[10px] text-zinc-500">
-                            {c.route.isRealRoad ? '보행로' : '직선'}
-                          </span>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              bookmarkCurrentRoute(
-                                c.route,
-                                `${effectiveShapeName ?? c.label} (${formatDistance(c.route.totalDistanceM)})`,
-                                courseTab === 'ai' ? 'ai' : 'sketch',
-                                c.similarity,
-                              );
-                            }}
-                            className="rounded-lg border border-white/12 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-zinc-200 active:scale-95"
-                          >
-                            🔖 찜
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-
-              {/* 코스 탭별 전용 액션 영역 (idle 시) */}
-              {idle && courseTab === 'sketch' && (
-                <div className="mb-2.5 flex items-center gap-1.5 overflow-x-auto scroll-x">
-                  <button
-                    onClick={() => setShowSketchPad(true)}
-                    className="chip shrink-0 rounded-full border-lime/35 bg-lime/10 px-3 py-1.5 text-[11px] font-bold text-lime"
-                  >
-                    🎨 캔버스 그리기
-                  </button>
-                  <button
-                    onClick={() => setMapDrawMode((v) => !v)}
-                    className={`chip shrink-0 rounded-full px-3 py-1.5 text-[11px] font-semibold ${
-                      mapDrawMode ? 'border-sky bg-sky/20 text-sky' : 'text-zinc-200'
-                    }`}
-                  >
-                    ✍️ 지도 위 그리기
-                  </button>
-                  <button
-                    onClick={() => setPage('guide')}
-                    className="chip shrink-0 rounded-full px-3 py-1.5 text-[11px] font-semibold text-zinc-200"
-                  >
-                    {activeGuide ? `${activeGuide.emoji} ${activeGuide.name}` : '📐 도안 10종'}
-                  </button>
-                  {hasShape && (
-                    <button
-                      onClick={handleFindSketchCandidates}
-                      disabled={candBusy}
-                      className="shrink-0 rounded-full bg-sky px-3 py-1.5 text-[11px] font-extrabold text-[#070A0F] disabled:opacity-60 active:scale-95"
-                    >
-                      {candBusy ? '찾는 중…' : '🔍 코스 3개 찾기'}
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {idle && courseTab === 'ai' && (
-                <div className="mb-2.5 space-y-2 rounded-2xl border border-white/8 bg-white/[0.03] p-2.5">
-                  <div className="flex gap-1.5">
-                    <input
-                      value={aiQuery}
-                      onChange={(e) => setAiQuery(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') handleSearchPlaces();
-                      }}
-                      placeholder="경유지 검색 (예: 호수공원, 역, 또는 지도 탭)"
-                      className="min-w-0 flex-1 rounded-xl border border-white/10 bg-[#0B1017] px-3 py-1.5 text-xs text-white outline-none placeholder:text-zinc-500 focus:border-lime/50"
-                    />
-                    <button
-                      onClick={handleSearchPlaces}
-                      disabled={aiSearching}
-                      className="shrink-0 rounded-xl border border-white/12 bg-white/8 px-3 py-1.5 text-xs font-bold text-zinc-200"
-                    >
-                      {aiSearching ? '…' : '검색'}
-                    </button>
-                  </div>
-
-                  {aiResults.length > 0 && (
-                    <div className="flex gap-1.5 overflow-x-auto scroll-x">
-                      {aiResults.map((pl) => (
-                        <button
-                          key={pl.id}
-                          onClick={() => {
-                            setAiWaypoint(pl);
-                            setAiResults([]);
-                            mapRef.current?.flyTo(pl.location, 15);
-                          }}
-                          className="shrink-0 rounded-xl border border-sky/30 bg-sky/10 px-2.5 py-1 text-left text-[11px] text-sky"
+          {/* 드래그 핸들 + 요약/접기 토글 헤더 */}
+          <div
+            onPointerDown={onSheetHandleDown}
+            onPointerMove={onSheetHandleMove}
+            onPointerUp={onSheetHandleUp}
+            onPointerCancel={onSheetHandleUp}
+            className="touch-none cursor-grab pb-1.5 pt-0.5 active:cursor-grabbing"
+          >
+            <div className="mx-auto mb-1.5 h-1 w-10 rounded-full bg-white/25" />
+            {page === 'main' && (
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-1.5 text-[11px]">
+                  {idle ? (
+                    walkableRoute ? (
+                      <>
+                        <span
+                          className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            walkableRoute.isRealRoad
+                              ? 'bg-mint/15 text-mint'
+                              : 'bg-amber/15 text-amber'
+                          }`}
                         >
-                          <div className="font-bold">{pl.name}</div>
-                          {pl.address && (
-                            <div className="max-w-[140px] truncate text-[9px] text-zinc-400">
-                              {pl.address}
-                            </div>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px]">
-                    <div className="flex items-center gap-1.5">
-                      {aiWaypoint ? (
-                        <span className="flex items-center gap-1 rounded-full bg-mint/15 px-2.5 py-1 font-semibold text-mint">
-                          📍 {aiWaypoint.name}
-                          <button
-                            onClick={() => setAiWaypoint(null)}
-                            className="ml-0.5 text-zinc-400"
-                          >
-                            ✕
-                          </button>
+                          {walkableRoute.isRealRoad ? '실제 도보길' : '직선 안내'}
                         </span>
-                      ) : (
-                        <span className="text-zinc-400">지도 탭 또는 검색으로 경유지 선택</span>
-                      )}
-                    </div>
-                    <div className="flex gap-1 rounded-full border border-white/10 bg-white/[0.03] p-0.5">
-                      <button
-                        onClick={() => setAiRoundTrip(true)}
-                        className={`rounded-full px-2 py-0.5 font-bold ${
-                          aiRoundTrip ? 'bg-lime text-[#0B1015]' : 'text-zinc-400'
-                        }`}
-                      >
-                        왕복 순환
-                      </button>
-                      <button
-                        onClick={() => setAiRoundTrip(false)}
-                        className={`rounded-full px-2 py-0.5 font-bold ${
-                          !aiRoundTrip ? 'bg-lime text-[#0B1015]' : 'text-zinc-400'
-                        }`}
-                      >
-                        편도
-                      </button>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={handleGenerateAiCourses}
-                    disabled={aiBusy}
-                    className="w-full rounded-xl bg-sky py-2 text-xs font-extrabold text-[#070A0F] disabled:opacity-60 active:scale-[0.99]"
-                  >
-                    {aiBusy
-                      ? 'AI가 도보 코스를 계산하는 중…'
-                      : `✨ AI 코스 3개 추천 (${activePace.emoji} ${formatDistance(targetDistanceM)})`}
-                  </button>
-                </div>
-              )}
-
-              {idle && courseTab === 'pin' && (
-                <div className="mb-2.5 flex items-center justify-between gap-2 rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-2">
-                  <div className="text-[11px] text-zinc-300">
-                    {pinPoints.length === 0
-                      ? '지도를 콕콕 눌러 원하는 길을 이어보세요.'
-                      : `점 ${pinPoints.length}개 선택됨`}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    <button
-                      onClick={() => setPinPoints((p) => p.slice(0, -1))}
-                      disabled={pinPoints.length === 0}
-                      className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 disabled:opacity-40"
-                    >
-                      ↩ 되돌리기
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (pinPoints.length >= 2) {
-                          setPinPoints((p) => [...p, p[0]]);
-                        }
-                      }}
-                      disabled={pinPoints.length < 2}
-                      className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-sky disabled:opacity-40"
-                    >
-                      🔄 닫기
-                    </button>
-                    <button
-                      onClick={() => {
-                        setPinPoints([]);
-                        setWalkableRoute(null);
-                      }}
-                      disabled={pinPoints.length === 0}
-                      className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 disabled:opacity-40"
-                    >
-                      지우기
-                    </button>
-                    {walkableRoute && (
-                      <button
-                        onClick={() =>
-                          bookmarkCurrentRoute(
-                            walkableRoute,
-                            `내 맘대로 코스 (${formatDistance(walkableRoute.totalDistanceM)})`,
-                            'pin',
-                          )
-                        }
-                        className="rounded-lg border border-lime/35 bg-lime/10 px-2 py-1 text-[11px] font-bold text-lime"
-                      >
-                        🔖 찜
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* 거리 · 시간 · 페이스 */}
-              <div className="flex items-end justify-between px-1">
-                <Stat label="거리" value={formatDistance(distance)} />
-                <Stat label="시간" value={mode === 'idle' ? '00:00' : formatClock(elapsed)} />
-                <Stat label="페이스" value={formatPace(distance, elapsed)} suffix="/km" />
-              </div>
-
-              {/* 목표 · 속도 요약 바 */}
-              <div className="mt-1.5 px-1">
-                <div className="flex items-center justify-between text-[11px] text-zinc-400">
-                  <span>
-                    {activePace.emoji} {activePace.label} · 목표{' '}
-                    <strong className="text-zinc-200">{formatDistance(activeGoalDistM)}</strong> (약{' '}
-                    {formatEstimatedMinutes(
-                      walkableRoute ? navRouteEtaMin : estimatedGoalMinutes,
-                    )}
+                        <span className="truncate font-bold text-white">
+                          {selectedCandidate
+                            ? selectedCandidate.label
+                            : (effectiveShapeName ?? '선택 코스')}
+                        </span>
+                        <span className="shrink-0 font-extrabold tabular-nums text-lime">
+                          {formatDistance(walkableRoute.totalDistanceM)}
+                        </span>
+                        <span className="shrink-0 text-zinc-400">
+                          · {activePace.emoji} {formatEstimatedMinutes(navRouteEtaMin)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRouteLocked(false);
+                            setRouteRefreshSeq((n) => n + 1);
+                          }}
+                          className="ml-0.5 shrink-0 text-[11px] text-zinc-400 active:scale-90"
+                          aria-label="경로 재탐색"
+                          title="경로 재탐색"
+                        >
+                          {routingBusy ? '⏳' : '🔄'}
+                        </button>
+                      </>
+                    ) : (
+                      <span className="truncate text-zinc-300">
+                        {activePace.emoji} {activePace.label} · 목표{' '}
+                        <strong className="text-white">{formatDistance(targetDistanceM)}</strong>{' '}
+                        <span className="text-zinc-400">
+                          (약 {formatEstimatedMinutes(estimatedGoalMinutes)})
+                        </span>
+                      </span>
                     )
-                  </span>
-                  {(rec || paused) && (
-                    <span className="font-semibold tabular-nums text-lime">{goalProgressPct}%</span>
+                  ) : (
+                    <span className="truncate font-bold text-zinc-200">
+                      {rec ? '🟢 산책 기록 중' : '⏸ 일시정지'} ·{' '}
+                      <span className="tabular-nums text-lime">{formatDistance(distance)}</span> ·{' '}
+                      <span className="tabular-nums">{formatClock(elapsed)}</span>
+                    </span>
                   )}
                 </div>
-                {(rec || paused) && (
-                  <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-white/10">
-                    <div
-                      className="h-full rounded-full bg-lime transition-all"
-                      style={{ width: `${goalProgressPct}%` }}
-                    />
-                  </div>
-                )}
-              </div>
 
-              {/* 설정 칩 */}
-              <div className="mt-2.5 flex items-center gap-2 overflow-x-auto scroll-x pb-0.5">
                 <button
-                  onClick={() => setPage('style')}
-                  className="chip flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] text-zinc-200"
+                  type="button"
+                  onClick={toggleSheetPeek}
+                  aria-label={effectiveSnap === 'peek' ? '코스 메뉴 펼치기' : '지도 넓게 보기'}
+                  className="shrink-0 rounded-full border border-white/12 bg-white/[0.06] px-2.5 py-1 text-[10px] font-bold text-zinc-200 active:scale-95"
                 >
-                  <span className="h-2.5 w-2.5 rounded-full" style={{ background: color }} />
-                  펜 스타일
-                </button>
-                <button
-                  onClick={() => setPage('goal')}
-                  className="chip flex shrink-0 items-center gap-1.5 rounded-full border-mint/30 bg-mint/10 px-3 py-1.5 text-[11px] font-semibold text-mint"
-                >
-                  {activePace.emoji}{' '}
-                  {goalMode === 'time'
-                    ? formatEstimatedMinutes(goalMinutes)
-                    : formatDistance(goalDistanceM)}
-                </button>
-                <button
-                  onClick={() => {
-                    setSim((s) => !s);
-                    showToast(
-                      sim
-                        ? '시뮬레이션을 껐어요. 실제 GPS로 기록합니다.'
-                        : '시뮬레이션을 켰어요. 지도를 눌러 그려 보세요.',
-                    );
-                  }}
-                  className={`chip flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] ${
-                    sim ? 'border-sky/50 bg-sky/15 text-sky' : 'text-zinc-300'
-                  }`}
-                >
-                  🛰 시뮬 {sim ? 'ON' : 'OFF'}
-                </button>
-                <button
-                  onClick={() => {
-                    setGuideId(null);
-                    setCustomStrokes(null);
-                    setGuideCenter(null);
-                    setPinPoints([]);
-                    setCandidates([]);
-                    setSelectedCandId(null);
-                    setWalkableRoute(null);
-                    setRouteLocked(false);
-                  }}
-                  className="chip flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] text-zinc-400"
-                >
-                  ♻︎ 초기화
+                  {effectiveSnap === 'peek' ? '▴ 코스 메뉴' : '▾ 지도 넓게'}
                 </button>
               </div>
+            )}
+          </div>
 
-              {/* 주 액션 버튼 */}
+          {page === 'main' && effectiveSnap === 'peek' && (
+            <div className="mt-1 flex items-center justify-between gap-2">
               {idle && (
-                <button
-                  onClick={beginWalk}
-                  className="mt-2.5 w-full rounded-2xl bg-lime py-3.5 text-[15px] font-extrabold text-[#0B1015] active:scale-[0.99]"
-                >
-                  산책 시작
-                </button>
+                <>
+                  <div className="flex min-w-0 items-center gap-1.5 overflow-x-auto scroll-x">
+                    <button
+                      onClick={() => openSheetPage('goal')}
+                      className="chip flex shrink-0 items-center gap-1 rounded-full border-mint/30 bg-mint/10 px-2.5 py-1.5 text-[11px] font-semibold text-mint"
+                    >
+                      {activePace.emoji}{' '}
+                      {goalMode === 'time'
+                        ? formatEstimatedMinutes(goalMinutes)
+                        : formatDistance(goalDistanceM)}
+                    </button>
+                    <button
+                      onClick={toggleSheetPeek}
+                      className="chip shrink-0 rounded-full px-2.5 py-1.5 text-[11px] font-semibold text-zinc-300"
+                    >
+                      {courseTab === 'ai'
+                        ? candidates.length > 0
+                          ? `코스 ${candidates.length}개`
+                          : 'AI 설정'
+                        : courseTab === 'pin'
+                          ? `점 ${pinPoints.length}개`
+                          : courseTab === 'sketch'
+                            ? hasShape
+                              ? effectiveShapeName ?? '도안'
+                              : '도안 선택'
+                            : '자유 산책'}
+                    </button>
+                  </div>
+                  <button
+                    onClick={beginWalk}
+                    className="shrink-0 rounded-xl bg-lime px-5 py-2.5 text-[13px] font-extrabold text-[#0B1015] active:scale-[0.98]"
+                  >
+                    산책 시작
+                  </button>
+                </>
               )}
 
               {rec && (
-                <div className="mt-2.5 space-y-2">
+                <div className="flex w-full items-center gap-2">
                   {sim && (
                     <button
                       onClick={startAutoWalk}
-                      className="w-full rounded-xl border border-sky/40 bg-sky/10 py-2.5 text-[13px] font-semibold text-sky active:scale-[0.99]"
+                      className="rounded-xl border border-sky/40 bg-sky/10 px-3 py-2.5 text-[12px] font-bold text-sky active:scale-[0.98]"
                     >
-                      {autoWalking
-                        ? '⏹ 자동 걷기 멈추기'
-                        : walkableRoute?.isRealRoad
-                          ? `🧭 실제 도보 경로로 자동 걷기 (${activePace.label})`
-                          : hasShape
-                            ? `▶ ${effectiveShapeName ?? '도안'} 자동 걷기`
-                            : '▶ 자동 걷기 (데모 루트)'}
+                      {autoWalking ? '⏹ 멈춤' : '▶ 자동 걷기'}
                     </button>
                   )}
-                  <div className="flex gap-2">
-                    <button
-                      onClick={pauseWalk}
-                      className="flex-1 rounded-2xl border border-white/12 bg-white/[0.06] py-3.5 text-[15px] font-bold text-zinc-100 active:scale-[0.99]"
-                    >
-                      ⏸ 일시정지
-                    </button>
-                    <button
-                      onClick={finishWalk}
-                      className="flex-1 rounded-2xl bg-lime py-3.5 text-[15px] font-extrabold text-[#0B1015] active:scale-[0.99]"
-                    >
-                      완료 · 카드 만들기
-                    </button>
-                  </div>
+                  <button
+                    onClick={pauseWalk}
+                    className="flex-1 rounded-xl border border-white/12 bg-white/[0.06] py-2.5 text-[13px] font-bold text-zinc-100 active:scale-[0.98]"
+                  >
+                    ⏸ 일시정지
+                  </button>
+                  <button
+                    onClick={finishWalk}
+                    className="flex-1 rounded-xl bg-lime py-2.5 text-[13px] font-extrabold text-[#0B1015] active:scale-[0.98]"
+                  >
+                    완료 · 카드 만들기
+                  </button>
                 </div>
               )}
 
               {paused && (
-                <div className="mt-2.5 space-y-2">
-                  <div className="flex gap-2">
-                    <button
-                      onClick={resumeWalk}
-                      className="flex-1 rounded-2xl bg-lime py-3.5 text-[15px] font-extrabold text-[#0B1015] active:scale-[0.99]"
-                    >
-                      ▶ 재개
-                    </button>
-                    <button
-                      onClick={finishWalk}
-                      className="flex-1 rounded-2xl border border-white/12 bg-white/[0.06] py-3.5 text-[15px] font-bold text-zinc-100 active:scale-[0.99]"
-                    >
-                      완료
-                    </button>
-                  </div>
-                  <button onClick={cancelWalk} className="w-full py-1 text-[12px] text-zinc-500">
-                    기록 취소
+                <div className="flex w-full items-center gap-2">
+                  <button
+                    onClick={resumeWalk}
+                    className="flex-1 rounded-xl bg-lime py-2.5 text-[13px] font-extrabold text-[#0B1015] active:scale-[0.98]"
+                  >
+                    ▶ 재개
+                  </button>
+                  <button
+                    onClick={finishWalk}
+                    className="flex-1 rounded-xl border border-white/12 bg-white/[0.06] py-2.5 text-[13px] font-bold text-zinc-100 active:scale-[0.98]"
+                  >
+                    완료
                   </button>
                 </div>
               )}
+            </div>
+          )}
+
+          {page === 'main' && effectiveSnap !== 'peek' && (
+            <>
+              <div
+                className={`overflow-y-auto overscroll-contain pr-0.5 ${
+                  effectiveSnap === 'full' ? 'max-h-[54dvh]' : 'max-h-[34dvh]'
+                }`}
+              >
+                {/* 이어 그리기 배너 */}
+                {draft && idle && (
+                  <div className="mb-2 rounded-2xl border border-lime/25 bg-lime/[0.08] p-2.5">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-[12px] font-semibold text-lime">이어 그릴 산책이 있어요</div>
+                        <div className="text-[11px] text-zinc-400">
+                          {formatDistance(pathDistance(draft.points))} · 지점 {draft.points.length}개
+                        </div>
+                      </div>
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => {
+                            setPoints(draft.points);
+                            setColor(draft.color);
+                            setWidth(draft.width);
+                            setGuideId(draft.guideId);
+                            elapsedRef.current = Math.max(0, Date.now() - draft.startedAt);
+                            startRef.current = 0;
+                            setMode('paused');
+                            setDraft(null);
+                            showToast('이어서 그릴 수 있어요. 재개를 눌러 주세요.');
+                          }}
+                          className="rounded-xl bg-lime px-3 py-1.5 text-[11px] font-bold text-[#0B1015]"
+                        >
+                          이어서
+                        </button>
+                        <button
+                          onClick={() => {
+                            clearDraft();
+                            setDraft(null);
+                          }}
+                          className="rounded-xl border border-white/10 px-2.5 py-1.5 text-[11px] text-zinc-400"
+                        >
+                          버리기
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* 3코스 후보 카드 비교 (그림·AI 추천 시) */}
+                {idle && candidates.length > 0 && (
+                  <div className="mb-2 flex gap-2 overflow-x-auto scroll-x pb-0.5">
+                    {candidates.map((c) => {
+                      const active = c.id === selectedCandId;
+                      return (
+                        <div
+                          key={c.id}
+                          onClick={() => selectCandidate(c)}
+                          className={`min-w-[152px] shrink-0 cursor-pointer rounded-2xl border p-2 transition ${
+                            active
+                              ? 'border-lime/70 bg-lime/[0.11]'
+                              : 'border-white/10 bg-white/[0.03]'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="truncate text-[11px] font-extrabold text-white">
+                              {c.label}
+                            </span>
+                            {c.similarity !== undefined ? (
+                              <span className="shrink-0 rounded-full bg-mint/15 px-1.5 py-0.5 text-[9px] font-bold text-mint">
+                                닮음 {c.similarity}%
+                              </span>
+                            ) : (
+                              <span className="shrink-0 rounded-full bg-sky/15 px-1.5 py-0.5 text-[9px] font-bold text-sky">
+                                {c.tag}
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-1 flex items-center justify-between text-[11px] text-zinc-300">
+                            <span className="font-bold tabular-nums">
+                              {formatDistance(c.route.totalDistanceM)}
+                            </span>
+                            <span className="text-[10px] text-zinc-400">
+                              {activePace.emoji}{' '}
+                              {formatEstimatedMinutes(
+                                calcMinutesFromDistance(c.route.totalDistanceM, paceId),
+                              )}
+                            </span>
+                          </div>
+                          <div className="mt-1.5 flex items-center justify-between gap-1.5">
+                            <span className="text-[10px] text-zinc-500">
+                              {c.route.isRealRoad ? '보행로' : '직선'}
+                            </span>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                bookmarkCurrentRoute(
+                                  c.route,
+                                  `${effectiveShapeName ?? c.label} (${formatDistance(c.route.totalDistanceM)})`,
+                                  courseTab === 'ai' ? 'ai' : 'sketch',
+                                  c.similarity,
+                                );
+                              }}
+                              className="rounded-lg border border-white/12 bg-white/5 px-2 py-0.5 text-[10px] font-semibold text-zinc-200 active:scale-95"
+                            >
+                              🔖 찜
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* 코스 탭별 전용 액션 영역 (idle 시) */}
+                {idle && courseTab === 'sketch' && (
+                  <div className="mb-2 space-y-1.5">
+                    <div className="flex items-center gap-1.5 overflow-x-auto scroll-x">
+                      <button
+                        onClick={() => setShowSketchPad(true)}
+                        className="chip shrink-0 rounded-full border-lime/35 bg-lime/10 px-3 py-1.5 text-[11px] font-bold text-lime"
+                      >
+                        🎨 캔버스 그리기
+                      </button>
+                      <button
+                        onClick={() =>
+                          setMapDrawMode((v) => {
+                            const next = !v;
+                            if (next) setSheetSnap('peek');
+                            return next;
+                          })
+                        }
+                        className={`chip shrink-0 rounded-full px-3 py-1.5 text-[11px] font-semibold ${
+                          mapDrawMode ? 'border-sky bg-sky/20 text-sky' : 'text-zinc-200'
+                        }`}
+                      >
+                        ✍️ 지도 위 그리기
+                      </button>
+                      <button
+                        onClick={() => openSheetPage('guide')}
+                        className="chip shrink-0 rounded-full px-3 py-1.5 text-[11px] font-semibold text-zinc-200"
+                      >
+                        {activeGuide ? `${activeGuide.emoji} ${activeGuide.name}` : '📐 도안 10종'}
+                      </button>
+                      {hasShape && (
+                        <button
+                          onClick={handleFindSketchCandidates}
+                          disabled={candBusy}
+                          className="shrink-0 rounded-full bg-sky px-3 py-1.5 text-[11px] font-extrabold text-[#070A0F] disabled:opacity-60 active:scale-95"
+                        >
+                          {candBusy ? '찾는 중…' : '🔍 코스 3개 찾기'}
+                        </button>
+                      )}
+                    </div>
+                    {hasShape && (
+                      <div className="px-1 text-[10px] text-zinc-500">
+                        ✥ 지도 위 핸들로 도안 이동 · ↻ 회전
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {idle && courseTab === 'ai' && (
+                  aiFormOpen || candidates.length === 0 ? (
+                    <div className="mb-2 space-y-2 rounded-2xl border border-white/8 bg-white/[0.03] p-2.5">
+                      <div className="flex gap-1.5">
+                        <input
+                          value={aiQuery}
+                          onChange={(e) => setAiQuery(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleSearchPlaces();
+                          }}
+                          placeholder="경유지 검색 (예: 호수공원, 역, 또는 지도 탭)"
+                          className="min-w-0 flex-1 rounded-xl border border-white/10 bg-[#0B1017] px-3 py-1.5 text-xs text-white outline-none placeholder:text-zinc-500 focus:border-lime/50"
+                        />
+                        <button
+                          onClick={handleSearchPlaces}
+                          disabled={aiSearching}
+                          className="shrink-0 rounded-xl border border-white/12 bg-white/8 px-3 py-1.5 text-xs font-bold text-zinc-200"
+                        >
+                          {aiSearching ? '…' : '검색'}
+                        </button>
+                      </div>
+
+                      {aiResults.length > 0 && (
+                        <div className="flex gap-1.5 overflow-x-auto scroll-x">
+                          {aiResults.map((pl) => (
+                            <button
+                              key={pl.id}
+                              onClick={() => {
+                                setAiWaypoint(pl);
+                                setAiResults([]);
+                                mapRef.current?.flyTo(pl.location, 15);
+                              }}
+                              className="shrink-0 rounded-xl border border-sky/30 bg-sky/10 px-2.5 py-1 text-left text-[11px] text-sky"
+                            >
+                              <div className="font-bold">{pl.name}</div>
+                              {pl.address && (
+                                <div className="max-w-[140px] truncate text-[9px] text-zinc-400">
+                                  {pl.address}
+                                </div>
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+
+                      <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px]">
+                        <div className="flex items-center gap-1.5">
+                          {aiWaypoint ? (
+                            <span className="flex items-center gap-1 rounded-full bg-mint/15 px-2.5 py-1 font-semibold text-mint">
+                              📍 {aiWaypoint.name}
+                              <button
+                                onClick={() => setAiWaypoint(null)}
+                                className="ml-0.5 text-zinc-400"
+                              >
+                                ✕
+                              </button>
+                            </span>
+                          ) : (
+                            <span className="text-zinc-400">지도 탭 또는 검색으로 경유지 선택</span>
+                          )}
+                        </div>
+                        <div className="flex gap-1 rounded-full border border-white/10 bg-white/[0.03] p-0.5">
+                          <button
+                            onClick={() => setAiRoundTrip(true)}
+                            className={`rounded-full px-2 py-0.5 font-bold ${
+                              aiRoundTrip ? 'bg-lime text-[#0B1015]' : 'text-zinc-400'
+                            }`}
+                          >
+                            왕복 순환
+                          </button>
+                          <button
+                            onClick={() => setAiRoundTrip(false)}
+                            className={`rounded-full px-2 py-0.5 font-bold ${
+                              !aiRoundTrip ? 'bg-lime text-[#0B1015]' : 'text-zinc-400'
+                            }`}
+                          >
+                            편도
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={handleGenerateAiCourses}
+                          disabled={aiBusy}
+                          className="flex-1 rounded-xl bg-sky py-2 text-xs font-extrabold text-[#070A0F] disabled:opacity-60 active:scale-[0.99]"
+                        >
+                          {aiBusy
+                            ? 'AI가 도보 코스를 계산하는 중…'
+                            : `✨ AI 코스 3개 추천 (${activePace.emoji} ${formatDistance(targetDistanceM)})`}
+                        </button>
+                        {candidates.length > 0 && (
+                          <button
+                            onClick={() => setAiFormOpen(false)}
+                            className="shrink-0 rounded-xl border border-white/12 px-3 py-2 text-[11px] font-semibold text-zinc-300"
+                          >
+                            닫기
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="mb-2 flex items-center justify-between gap-2 rounded-xl border border-white/8 bg-white/[0.03] px-2.5 py-1.5 text-[11px]">
+                      <span className="truncate text-zinc-300">
+                        📍 {aiWaypoint ? aiWaypoint.name : '현위치 주변'} ·{' '}
+                        {aiRoundTrip ? '왕복 순환' : '편도'}
+                      </span>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <button
+                          onClick={() => setAiFormOpen(true)}
+                          className="rounded-lg border border-white/12 bg-white/[0.05] px-2 py-1 text-[10px] font-semibold text-zinc-200"
+                        >
+                          조건 변경
+                        </button>
+                        <button
+                          onClick={handleGenerateAiCourses}
+                          disabled={aiBusy}
+                          className="rounded-lg bg-sky/20 px-2 py-1 text-[10px] font-bold text-sky disabled:opacity-50"
+                        >
+                          {aiBusy ? '계산 중…' : '🔄 다시 추천'}
+                        </button>
+                      </div>
+                    </div>
+                  )
+                )}
+
+                {idle && courseTab === 'pin' && (
+                  <div className="mb-2 flex items-center justify-between gap-2 rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-2">
+                    <div className="text-[11px] text-zinc-300">
+                      {pinPoints.length === 0
+                        ? '지도를 콕콕 눌러 원하는 길을 이어보세요.'
+                        : `점 ${pinPoints.length}개 선택됨`}
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <button
+                        onClick={() => setPinPoints((p) => p.slice(0, -1))}
+                        disabled={pinPoints.length === 0}
+                        className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-300 disabled:opacity-40"
+                      >
+                        ↩ 되돌리기
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (pinPoints.length >= 2) {
+                            setPinPoints((p) => [...p, p[0]]);
+                          }
+                        }}
+                        disabled={pinPoints.length < 2}
+                        className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-sky disabled:opacity-40"
+                      >
+                        🔄 닫기
+                      </button>
+                      <button
+                        onClick={() => {
+                          setPinPoints([]);
+                          setWalkableRoute(null);
+                        }}
+                        disabled={pinPoints.length === 0}
+                        className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 disabled:opacity-40"
+                      >
+                        지우기
+                      </button>
+                      {walkableRoute && (
+                        <button
+                          onClick={() =>
+                            bookmarkCurrentRoute(
+                              walkableRoute,
+                              `내 맘대로 코스 (${formatDistance(walkableRoute.totalDistanceM)})`,
+                              'pin',
+                            )
+                          }
+                          className="rounded-lg border border-lime/35 bg-lime/10 px-2 py-1 text-[11px] font-bold text-lime"
+                        >
+                          🔖 찜
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* 거리 · 시간 · 페이스 (기록/일시정지 시에만 표시) */}
+                {(rec || paused) && (
+                  <div className="mb-2">
+                    <div className="flex items-end justify-between px-1">
+                      <Stat label="거리" value={formatDistance(distance)} />
+                      <Stat label="시간" value={formatClock(elapsed)} />
+                      <Stat label="페이스" value={formatPace(distance, elapsed)} suffix="/km" />
+                    </div>
+                    <div className="mt-1.5 px-1">
+                      <div className="flex items-center justify-between text-[11px] text-zinc-400">
+                        <span>
+                          {activePace.emoji} {activePace.label} · 목표{' '}
+                          <strong className="text-zinc-200">{formatDistance(activeGoalDistM)}</strong>{' '}
+                          (약{' '}
+                          {formatEstimatedMinutes(
+                            walkableRoute ? navRouteEtaMin : estimatedGoalMinutes,
+                          )}
+                          )
+                        </span>
+                        <span className="font-semibold tabular-nums text-lime">{goalProgressPct}%</span>
+                      </div>
+                      <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-white/10">
+                        <div
+                          className="h-full rounded-full bg-lime transition-all"
+                          style={{ width: `${goalProgressPct}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 고정 하단 칩 + 주 액션 버튼 */}
+              <div className="pt-1">
+                <div className="flex items-center gap-2 overflow-x-auto scroll-x pb-0.5">
+                  <button
+                    onClick={() => openSheetPage('style')}
+                    className="chip flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] text-zinc-200"
+                  >
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: color }} />
+                    펜 스타일
+                  </button>
+                  <button
+                    onClick={() => openSheetPage('goal')}
+                    className="chip flex shrink-0 items-center gap-1.5 rounded-full border-mint/30 bg-mint/10 px-3 py-1.5 text-[11px] font-semibold text-mint"
+                  >
+                    {activePace.emoji}{' '}
+                    {goalMode === 'time'
+                      ? formatEstimatedMinutes(goalMinutes)
+                      : formatDistance(goalDistanceM)}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setSim((s) => !s);
+                      showToast(
+                        sim
+                          ? '시뮬레이션을 껐어요. 실제 GPS로 기록합니다.'
+                          : '시뮬레이션을 켰어요. 지도를 눌러 그려 보세요.',
+                      );
+                    }}
+                    className={`chip flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] ${
+                      sim ? 'border-sky/50 bg-sky/15 text-sky' : 'text-zinc-300'
+                    }`}
+                  >
+                    🛰 시뮬 {sim ? 'ON' : 'OFF'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setGuideId(null);
+                      setCustomStrokes(null);
+                      setGuideCenter(null);
+                      setPinPoints([]);
+                      setCandidates([]);
+                      setSelectedCandId(null);
+                      setWalkableRoute(null);
+                      setRouteLocked(false);
+                      setAiFormOpen(true);
+                    }}
+                    className="chip flex shrink-0 items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] text-zinc-400"
+                  >
+                    ♻︎ 초기화
+                  </button>
+                </div>
+
+                {idle && (
+                  <button
+                    onClick={beginWalk}
+                    className="mt-2 w-full rounded-2xl bg-lime py-3 text-[15px] font-extrabold text-[#0B1015] active:scale-[0.99]"
+                  >
+                    산책 시작
+                  </button>
+                )}
+
+                {rec && (
+                  <div className="mt-2 space-y-2">
+                    {sim && (
+                      <button
+                        onClick={startAutoWalk}
+                        className="w-full rounded-xl border border-sky/40 bg-sky/10 py-2 text-[13px] font-semibold text-sky active:scale-[0.99]"
+                      >
+                        {autoWalking
+                          ? '⏹ 자동 걷기 멈추기'
+                          : walkableRoute?.isRealRoad
+                            ? `🧭 실제 도보 경로로 자동 걷기 (${activePace.label})`
+                            : hasShape
+                              ? `▶ ${effectiveShapeName ?? '도안'} 자동 걷기`
+                              : '▶ 자동 걷기 (데모 루트)'}
+                      </button>
+                    )}
+                    <div className="flex gap-2">
+                      <button
+                        onClick={pauseWalk}
+                        className="flex-1 rounded-2xl border border-white/12 bg-white/[0.06] py-3 text-[14px] font-bold text-zinc-100 active:scale-[0.99]"
+                      >
+                        ⏸ 일시정지
+                      </button>
+                      <button
+                        onClick={finishWalk}
+                        className="flex-1 rounded-2xl bg-lime py-3 text-[14px] font-extrabold text-[#0B1015] active:scale-[0.99]"
+                      >
+                        완료 · 카드 만들기
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {paused && (
+                  <div className="mt-2 space-y-2">
+                    <div className="flex gap-2">
+                      <button
+                        onClick={resumeWalk}
+                        className="flex-1 rounded-2xl bg-lime py-3 text-[14px] font-extrabold text-[#0B1015] active:scale-[0.99]"
+                      >
+                        ▶ 재개
+                      </button>
+                      <button
+                        onClick={finishWalk}
+                        className="flex-1 rounded-2xl border border-white/12 bg-white/[0.06] py-3 text-[14px] font-bold text-zinc-100 active:scale-[0.99]"
+                      >
+                        완료
+                      </button>
+                    </div>
+                    <button onClick={cancelWalk} className="w-full py-1 text-[12px] text-zinc-500">
+                      기록 취소
+                    </button>
+                  </div>
+                )}
+              </div>
             </>
           )}
 
           {page === 'goal' && (
-            <div className="pb-1">
-              <SheetHeader title="도보 시간 · 거리 · 속도" onBack={() => setPage('main')} />
+            <div className="max-h-[62dvh] overflow-y-auto overscroll-contain pb-1 pr-0.5">
+              <SheetHeader title="도보 시간 · 거리 · 속도" onBack={() => openSheetPage('main')} />
 
               <div className="mt-3 grid grid-cols-2 gap-1.5 rounded-2xl border border-white/10 bg-white/[0.03] p-1">
                 <button
@@ -1977,7 +2291,7 @@ export default function App() {
               )}
 
               <button
-                onClick={() => setPage('main')}
+                onClick={() => openSheetPage('main')}
                 className="mt-3 w-full rounded-2xl bg-lime py-3 text-[13px] font-extrabold text-[#0B1015] active:scale-[0.99]"
               >
                 적용 ({activePace.emoji} {formatDistance(targetDistanceM)} ·{' '}
@@ -1987,8 +2301,8 @@ export default function App() {
           )}
 
           {page === 'guide' && (
-            <div className="pb-1">
-              <SheetHeader title="도안 10종 · 위치·회전" onBack={() => setPage('main')} />
+            <div className="max-h-[62dvh] overflow-y-auto overscroll-contain pb-1 pr-0.5">
+              <SheetHeader title="도안 10종 · 위치·회전" onBack={() => openSheetPage('main')} />
               <div className="mt-2.5 grid grid-cols-5 gap-1.5">
                 {GUIDES.map((g) => (
                   <button
@@ -2104,14 +2418,14 @@ export default function App() {
                     setWalkableRoute(null);
                     setCandidates([]);
                     setSelectedCandId(null);
-                    setPage('main');
+                    openSheetPage('main');
                   }}
                   className="flex-1 rounded-2xl border border-white/12 bg-white/[0.04] py-2.5 text-[13px] font-semibold text-zinc-300"
                 >
                   도안 없이
                 </button>
                 <button
-                  onClick={() => setPage('main')}
+                  onClick={() => openSheetPage('main')}
                   className="flex-1 rounded-2xl bg-lime py-2.5 text-[13px] font-extrabold text-[#0B1015]"
                 >
                   확인
@@ -2121,8 +2435,8 @@ export default function App() {
           )}
 
           {page === 'style' && (
-            <div className="pb-1">
-              <SheetHeader title="펜 스타일 · 지도" onBack={() => setPage('main')} />
+            <div className="max-h-[62dvh] overflow-y-auto overscroll-contain pb-1 pr-0.5">
+              <SheetHeader title="펜 스타일 · 지도" onBack={() => openSheetPage('main')} />
               <div className="mt-3 text-[11px] font-semibold tracking-wide text-zinc-500">색상</div>
               <div className="mt-2 flex gap-2.5">
                 {COLORS.map((c) => (
@@ -2177,7 +2491,7 @@ export default function App() {
               </div>
 
               <button
-                onClick={() => setPage('main')}
+                onClick={() => openSheetPage('main')}
                 className="mt-3 w-full rounded-2xl bg-white/[0.06] py-3 text-[13px] font-semibold text-zinc-200"
               >
                 확인
@@ -2212,8 +2526,10 @@ export default function App() {
               setPinPoints(r.kind === 'pin' ? r.path : []);
               setCandidates([]);
               setSelectedCandId(null);
+              setPage('main');
+              setSheetSnap('half');
               if (restored.path.length >= 2) {
-                window.setTimeout(() => mapRef.current?.fit(restored.path), 100);
+                window.setTimeout(() => fitRouteInView(restored.path, 'half'), 100);
               }
               showToast(`[${r.title}] 코스를 불러왔어요! [산책 시작]을 눌러 따라 걸어보세요.`);
             }}
