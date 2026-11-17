@@ -751,8 +751,16 @@ export default function App() {
 
     let path: LatLng[];
     if (walkableRoute && walkableRoute.path.length >= 2) {
-      path = walkableRoute.path.slice();
-      navPrevDistRef.current = 0;
+      // 일시정지·재개 후에는 지금까지 걸은 지점부터 이어서 걷는다 (처음으로 되돌아가지 않음)
+      const traveled = navPrevDistRef.current;
+      const last = pointsRef.current[pointsRef.current.length - 1];
+      const nextIdx = walkableRoute.cumDist.findIndex((d) => d > traveled);
+      if (traveled > 0 && last && nextIdx > 0) {
+        path = [{ lat: last.lat, lng: last.lng }, ...walkableRoute.path.slice(nextIdx)];
+      } else {
+        path = walkableRoute.path.slice();
+        navPrevDistRef.current = 0;
+      }
     } else if (effectiveSubpaths) {
       path = xyGroupsToLatLngs(effectiveSubpaths, center, guideSize, guideRot).flat();
     } else {
