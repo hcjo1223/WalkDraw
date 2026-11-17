@@ -294,6 +294,7 @@ async function fetchJsonWithTimeout(url: string, timeoutMs: number, outer?: Abor
   const ctrl = new AbortController();
   const timer = window.setTimeout(() => ctrl.abort(), timeoutMs);
   const onAbort = () => ctrl.abort();
+  if (outer?.aborted) ctrl.abort();
   outer?.addEventListener('abort', onAbort, { once: true });
   try {
     const res = await fetch(url, { signal: ctrl.signal });
@@ -611,7 +612,45 @@ export type RouteCandidate = {
   tag: string;
   route: WalkableRoute;
   similarity?: number;
+  /** 그림 코스: 이 후보를 만든 도안 크기(m)·회전(°) */
+  sizeM?: number;
+  rotDeg?: number;
 };
+
+/** 목표 거리 허용 오차 (±10%) */
+const LENGTH_TOLERANCE = 0.1;
+
+/**
+ * 실제 보행로 길이가 목표 거리에 가까워지도록 크기 배율(scale)을 바꿔 가며 다시 탐색한다.
+ * 도로 우회율은 동네마다 달라 고정 계수로는 맞지 않으므로, 받은 경로 길이로 배율을 보정한다.
+ * 요청은 최대 maxTries번, 그중 목표에 가장 가까운 경로를 돌려준다.
+ */
+export async function fetchRouteForDistance(
+  build: (scale: number) => LatLng[][],
+  targetDistM: number,
+  userLoc?: LatLng | null,
+  signal?: AbortSignal,
+  maxTries = 3,
+): Promise<{ route: WalkableRoute; scale: number }> {
+  let scale = 1;
+  let best: { route: WalkableRoute; scale: number } | null = null;
+  for (let i = 0; i < maxTries; i++) {
+    const route = await fetchWalkableRoute(build(scale), userLoc, signal);
+    if (!best || Math.abs(route.totalDistanceM - targetDistM) < Math.abs(best.route.totalDistanceM - targetDistM)) {
+      best = { route, scale };
+    }
+    if (signal?.aborted || !route.isRealRoad || route.totalDistanceM <= 0 || targetDistM <= 0) break;
+    const ratio = targetDistM / route.totalDistanceM;
+    if (Math.abs(ratio - 1) <= LENGTH_TOLERANCE) break;
+    scale *= Math.max(0.4, Math.min(2.5, ratio));
+  }
+  return best!;
+}
+
+/** 도안 크기(m)를 슬라이더 범위·단위(10 m)에 맞춘다 */
+export function roundGuideSize(sizeM: number): number {
+  return Math.max(40, Math.min(2500, Math.round(sizeM / 10) * 10));
+}
 
 function normalizeLatLngs(pts: LatLng[]): XY[] {
   if (pts.length === 0) return [];
@@ -674,20 +713,55 @@ export async function generateSketchCandidates(
   baseRotDeg: number,
   userLoc?: LatLng | null,
   signal?: AbortSignal,
+  /** 주면 기본 후보가 이 거리에 맞도록 크기를 보정한 뒤 나머지 후보를 만든다 */
+  targetDistM?: number,
 ): Promise<RouteCandidate[]> {
+  let base = baseSizeM;
+  let baseRoute: WalkableRoute | null = null;
+  if (targetDistM && targetDistM > 0) {
+    const r = await fetchRouteForDistance(
+      (s) => xyGroupsSampleWaypoints(subpaths, center, roundGuideSize(baseSizeM * s), baseRotDeg, 12),
+      targetDistM,
+      userLoc,
+      signal,
+    );
+    base = roundGuideSize(baseSizeM * r.scale);
+    baseRoute = r.route;
+  }
+
   const variants = [
     { id: 'c1', label: '추천 그림 코스', tag: '기본 맞춤', scale: 1.0, rotOffset: 0 },
-    { id: 'c2', label: '대안 그림 코스 1', tag: '여유 동선', scale: 1.14, rotOffset: 8 },
-    { id: 'c3', label: '대안 그림 코스 2', tag: '컴팩트', scale: 0.88, rotOffset: -8 },
+    { id: 'c2', label: '대안 그림 코스 1', tag: '여유 동선', scale: 1.1, rotOffset: 8 },
+    { id: 'c3', label: '대안 그림 코스 2', tag: '컴팩트', scale: 0.9, rotOffset: -8 },
   ];
 
   return Promise.all(
     variants.map(async (v) => {
-      const sz = Math.max(40, Math.round((baseSizeM * v.scale) / 10) * 10);
+      let sz = roundGuideSize(base * v.scale);
       const rot = ((baseRotDeg + v.rotOffset) % 360 + 360) % 360;
-      const wps = xyGroupsSampleWaypoints(subpaths, center, sz, rot, 12);
+      let route: WalkableRoute;
+      if (v.scale === 1 && v.rotOffset === 0 && baseRoute) {
+        route = baseRoute;
+      } else if (targetDistM && targetDistM > 0) {
+        // 대안도 목표 거리 × 변형 배율(여유 +, 컴팩트 −)에 맞게 한 번 더 보정
+        const start = sz;
+        const r = await fetchRouteForDistance(
+          (s) => xyGroupsSampleWaypoints(subpaths, center, roundGuideSize(start * s), rot, 12),
+          targetDistM * v.scale,
+          userLoc,
+          signal,
+          3,
+        );
+        route = r.route;
+        sz = roundGuideSize(start * r.scale);
+      } else {
+        route = await fetchWalkableRoute(
+          xyGroupsSampleWaypoints(subpaths, center, sz, rot, 12),
+          userLoc,
+          signal,
+        );
+      }
       const shapePts = xyGroupsToLatLngs(subpaths, center, sz, rot).flat();
-      const route = await fetchWalkableRoute(wps, userLoc, signal);
       const similarity = route.isRealRoad
         ? computeShapeSimilarity(shapePts, route.path)
         : 96;
@@ -697,6 +771,8 @@ export async function generateSketchCandidates(
         tag: v.tag,
         route,
         similarity,
+        sizeM: sz,
+        rotDeg: rot,
       };
     }),
   );
@@ -723,12 +799,14 @@ export async function generateAiCandidates(
     return [origin, p1, p2, origin];
   };
 
-  const makeWaypointCandidates = (): Array<{ id: string; tag: string; wps: LatLng[] }> => {
+  // build(scale): 길이 보정 배율을 받아 경유지를 만든다. 직통처럼 늘릴 수 없는 코스는 scalable=false
+  type Def = { id: string; tag: string; build: (scale: number) => LatLng[]; scalable: boolean };
+  const makeWaypointCandidates = (): Def[] => {
     if (!waypoint) {
       return [
-        { id: 'ai1', tag: '북동 순환', wps: makeLoopWaypoints(25, targetDistM, 1.0) },
-        { id: 'ai2', tag: '남동 순환', wps: makeLoopWaypoints(145, targetDistM, 0.92) },
-        { id: 'ai3', tag: '서쪽 순환', wps: makeLoopWaypoints(265, targetDistM, 1.08) },
+        { id: 'ai1', tag: '북동 순환', build: (s) => makeLoopWaypoints(25, targetDistM, 1.0 * s), scalable: true },
+        { id: 'ai2', tag: '남동 순환', build: (s) => makeLoopWaypoints(145, targetDistM, 0.92 * s), scalable: true },
+        { id: 'ai3', tag: '서쪽 순환', build: (s) => makeLoopWaypoints(265, targetDistM, 1.08 * s), scalable: true },
       ];
     }
 
@@ -739,24 +817,26 @@ export async function generateAiCandidates(
     const px = -uy;
     const py = ux;
     const mid = { x: wpXY.x * 0.5, y: wpXY.y * 0.5 };
-    const lateral = Math.max(70, Math.min(baseDist * 0.45, (targetDistM - baseDist * 2) * 0.25));
+    // 중간 우회점까지의 옆 거리: 직선 길이 × 도로 우회율(≈1.25)이 목표 거리가 되도록 계산
+    // 왕복: b + 2·√((b/2)²+lat²),  편도: 2·√((b/2)²+lat²)
+    const ROAD = 1.25;
+    const legs = (roundTrip ? targetDistM / ROAD - baseDist : targetDistM / ROAD) / 2;
+    const lateral = Math.max(40, Math.sqrt(Math.max(0, legs * legs - (baseDist / 2) ** 2)));
+    const detour = (sign: 1 | -1, s: number) =>
+      toLatLng({ x: mid.x + sign * px * lateral * s, y: mid.y + sign * py * lateral * s }, origin);
 
     if (roundTrip) {
-      const leftDetour = toLatLng({ x: mid.x + px * lateral, y: mid.y + py * lateral }, origin);
-      const rightDetour = toLatLng({ x: mid.x - px * lateral, y: mid.y - py * lateral }, origin);
       return [
-        { id: 'ai1', tag: '왕복 순환', wps: [origin, waypoint, leftDetour, origin] },
-        { id: 'ai2', tag: '반대 순환', wps: [origin, rightDetour, waypoint, origin] },
-        { id: 'ai3', tag: '직통 왕복', wps: [origin, waypoint, origin] },
+        { id: 'ai1', tag: '왕복 순환', build: (s) => [origin, waypoint, detour(1, s), origin], scalable: true },
+        { id: 'ai2', tag: '반대 순환', build: (s) => [origin, detour(-1, s), waypoint, origin], scalable: true },
+        { id: 'ai3', tag: '직통 왕복', build: () => [origin, waypoint, origin], scalable: false },
       ];
     }
 
-    const detourL = toLatLng({ x: mid.x + px * lateral, y: mid.y + py * lateral }, origin);
-    const detourR = toLatLng({ x: mid.x - px * lateral, y: mid.y - py * lateral }, origin);
     return [
-      { id: 'ai1', tag: '직통 편도', wps: [origin, waypoint] },
-      { id: 'ai2', tag: '여유 경유', wps: [origin, detourL, waypoint] },
-      { id: 'ai3', tag: '우회 경유', wps: [origin, detourR, waypoint] },
+      { id: 'ai1', tag: '직통 편도', build: () => [origin, waypoint], scalable: false },
+      { id: 'ai2', tag: '여유 경유', build: (s) => [origin, detour(1, s), waypoint], scalable: true },
+      { id: 'ai3', tag: '우회 경유', build: (s) => [origin, detour(-1, s), waypoint], scalable: true },
     ];
   };
 
@@ -765,7 +845,9 @@ export async function generateAiCandidates(
     defs.map(async (d) => ({
       id: d.id,
       tag: d.tag,
-      route: await fetchWalkableRoute([d.wps], null, signal),
+      route: (
+        await fetchRouteForDistance((s) => [d.build(s)], targetDistM, null, signal, d.scalable ? 3 : 1)
+      ).route,
     })),
   );
   routes.sort(

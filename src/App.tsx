@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CardView from './components/CardView';
 import MapView, { type CandidatePreview, type MapHandle } from './components/MapView';
+import HoldToUnlock from './components/HoldToUnlock';
 import PartnersView from './components/PartnersView';
 import RecordsView from './components/RecordsView';
 import SketchPad from './components/SketchPad';
@@ -49,6 +50,8 @@ import {
   fetchWalkableRoute,
   generateAiCandidates,
   generateSketchCandidates,
+  fetchRouteForDistance,
+  roundGuideSize,
   hydrateSavedRoute,
   searchPlaces,
   turnIcon,
@@ -202,11 +205,15 @@ export default function App() {
 
   const startRef = useRef(0);
   const elapsedRef = useRef(0);
+  /** 산책을 처음 시작한 시각 (일시정지·재개와 무관) */
+  const walkStartedAtRef = useRef(0);
   const autoRef = useRef<WalkController | null>(null);
   const toastTimer = useRef(0);
   const titleTimer = useRef(0);
   const transformingRef = useRef(false);
   const navPrevDistRef = useRef(0);
+  /** 길이 보정으로 바꾼 도안 크기: 이 크기로 인한 경로 재탐색은 건너뛴다 */
+  const calibratedSizeRef = useRef<number | null>(null);
   const lastSpokenStepRef = useRef<number | null>(null);
   const lastKmSpokenRef = useRef(0);
 
@@ -370,6 +377,20 @@ export default function App() {
 
   /* ---------------- 임시 저장 ---------------- */
 
+  // 임시 저장에 함께 넣을 계획 코스 (interval을 다시 만들지 않도록 ref로 최신값 유지)
+  const courseRef = useRef<NonNullable<Draft['course']> | null>(null);
+  courseRef.current = {
+    courseTab,
+    customStrokes,
+    customTitle,
+    guideSize,
+    guideRot,
+    guideCenter,
+    pinPoints,
+    walkableRoute,
+    routeLocked,
+  };
+
   useEffect(() => {
     if (mode === 'idle') return;
     const id = window.setInterval(() => {
@@ -379,7 +400,9 @@ export default function App() {
           color,
           width,
           guideId,
-          startedAt: startRef.current || Date.now(),
+          startedAt: walkStartedAtRef.current || Date.now(),
+          elapsedMs: elapsedRef.current + (startRef.current ? Date.now() - startRef.current : 0),
+          course: courseRef.current ?? undefined,
         });
       }
     }, 4000);
@@ -424,23 +447,42 @@ export default function App() {
       return;
     }
     if (transformingRef.current) return;
+    if (calibratedSizeRef.current === guideSize) {
+      // 바로 앞 탐색이 목표 거리에 맞춰 크기를 고친 것: 경로는 이미 그 크기로 받아 둠
+      calibratedSizeRef.current = null;
+      return;
+    }
+    calibratedSizeRef.current = null;
 
     const ctrl = new AbortController();
     const timer = window.setTimeout(async () => {
       setRoutingBusy(true);
       try {
-        const groups = xyGroupsSampleWaypoints(
-          effectiveSubpaths,
-          effectiveGuideCenter,
-          guideSize,
-          guideRot,
-          12,
-        );
-        const route = await fetchWalkableRoute(groups, myLocRef.current, ctrl.signal);
+        const groupsFor = (sz: number) =>
+          xyGroupsSampleWaypoints(effectiveSubpaths, effectiveGuideCenter, sz, guideRot, 12);
+        let route: WalkableRoute;
+        let nextSize = guideSize;
+        if (autoSizeToGoal) {
+          // 실제 보행로 길이가 목표 거리(±10%)에 오도록 도안 크기를 보정
+          const r = await fetchRouteForDistance(
+            (s) => groupsFor(roundGuideSize(guideSize * s)),
+            targetDistanceM,
+            myLocRef.current,
+            ctrl.signal,
+          );
+          route = r.route;
+          nextSize = roundGuideSize(guideSize * r.scale);
+        } else {
+          route = await fetchWalkableRoute(groupsFor(guideSize), myLocRef.current, ctrl.signal);
+        }
         if (!ctrl.signal.aborted) {
           setWalkableRoute(route);
           navPrevDistRef.current = 0;
           lastSpokenStepRef.current = null;
+          if (nextSize !== guideSize) {
+            calibratedSizeRef.current = nextSize;
+            setGuideSize(nextSize);
+          }
         }
       } catch {
         /* 취소됨 */
@@ -452,6 +494,7 @@ export default function App() {
     return () => {
       window.clearTimeout(timer);
       ctrl.abort();
+      setRoutingBusy(false);
     };
   }, [
     courseTab,
@@ -462,6 +505,8 @@ export default function App() {
     guideRot,
     walkableNavEnabled,
     routeRefreshSeq,
+    autoSizeToGoal,
+    targetDistanceM,
   ]);
 
   // 점 찍기 모드 자동 연결
@@ -491,6 +536,7 @@ export default function App() {
     return () => {
       window.clearTimeout(timer);
       ctrl.abort();
+      setRoutingBusy(false);
     };
   }, [courseTab, pinPoints, routeRefreshSeq]);
 
@@ -614,6 +660,11 @@ export default function App() {
     (path: LatLng[], snap: SheetSnap = sheetSnap) => {
       if (path.length < 2) return;
       const topPad = mode === 'idle' ? 108 : 136;
+      // 데스크톱(lg 이상)에서는 시트가 왼쪽 패널이므로 아래 대신 왼쪽을 비운다
+      if (window.matchMedia('(min-width: 1024px)').matches) {
+        mapRef.current?.fit(path, { top: topPad, bottom: 96, left: 468 });
+        return;
+      }
       const bottomPad = snap === 'peek' ? 190 : snap === 'full' ? 460 : 370;
       mapRef.current?.fit(path, { top: topPad, bottom: bottomPad });
     },
@@ -635,9 +686,12 @@ export default function App() {
         guideSize,
         guideRot,
         myLocRef.current,
+        undefined,
+        autoSizeToGoal ? targetDistanceM : undefined,
       );
       setCandidates(list);
       if (list[0]) {
+        if (list[0].sizeM) setGuideSize(list[0].sizeM);
         setSelectedCandId(list[0].id);
         setWalkableRoute(list[0].route);
         setRouteLocked(true);
@@ -652,7 +706,16 @@ export default function App() {
     } finally {
       setCandBusy(false);
     }
-  }, [effectiveSubpaths, effectiveGuideCenter, guideSize, guideRot, fitRouteInView, showToast]);
+  }, [
+    effectiveSubpaths,
+    effectiveGuideCenter,
+    guideSize,
+    guideRot,
+    autoSizeToGoal,
+    targetDistanceM,
+    fitRouteInView,
+    showToast,
+  ]);
 
   const handleSearchPlaces = useCallback(async () => {
     const q = aiQuery.trim();
@@ -703,6 +766,9 @@ export default function App() {
       setSelectedCandId(c.id);
       setWalkableRoute(c.route);
       setRouteLocked(true);
+      // 그림 후보: 지도 위 도안도 이 후보의 크기·회전으로 맞춘다
+      if (c.sizeM) setGuideSize(c.sizeM);
+      if (c.rotDeg !== undefined) setGuideRot(c.rotDeg);
       navPrevDistRef.current = 0;
       lastSpokenStepRef.current = null;
       fitRouteInView(c.route.path);
@@ -751,8 +817,16 @@ export default function App() {
 
     let path: LatLng[];
     if (walkableRoute && walkableRoute.path.length >= 2) {
-      path = walkableRoute.path.slice();
-      navPrevDistRef.current = 0;
+      // 일시정지·재개 후에는 지금까지 걸은 지점부터 이어서 걷는다 (처음으로 되돌아가지 않음)
+      const traveled = navPrevDistRef.current;
+      const last = pointsRef.current[pointsRef.current.length - 1];
+      const nextIdx = walkableRoute.cumDist.findIndex((d) => d > traveled);
+      if (traveled > 0 && last && nextIdx > 0) {
+        path = [{ lat: last.lat, lng: last.lng }, ...walkableRoute.path.slice(nextIdx)];
+      } else {
+        path = walkableRoute.path.slice();
+        navPrevDistRef.current = 0;
+      }
     } else if (effectiveSubpaths) {
       path = xyGroupsToLatLngs(effectiveSubpaths, center, guideSize, guideRot).flat();
     } else {
@@ -865,6 +939,7 @@ export default function App() {
     setNow(Date.now());
     elapsedRef.current = 0;
     startRef.current = Date.now();
+    walkStartedAtRef.current = startRef.current;
     navPrevDistRef.current = 0;
     lastSpokenStepRef.current = null;
     lastKmSpokenRef.current = 0;
@@ -1455,7 +1530,7 @@ export default function App() {
               ? 'none'
               : 'transform 0.24s cubic-bezier(0.22, 1, 0.36, 1)',
           }}
-          className={`sheet no-select absolute inset-x-0 z-30 flex flex-col rounded-t-[26px] px-4 pt-1.5 ${
+          className={`sheet no-select absolute inset-x-0 z-30 flex flex-col rounded-t-[26px] px-4 pt-1.5 lg:right-auto lg:left-4 lg:w-[420px] lg:rounded-b-[26px] lg:mb-4 ${
             showBottomTabs
               ? 'bottom-[calc(64px+env(safe-area-inset-bottom))] pb-2.5'
               : 'bottom-0 pb-[max(0.85rem,env(safe-area-inset-bottom))]'
@@ -1647,7 +1722,23 @@ export default function App() {
                             setColor(draft.color);
                             setWidth(draft.width);
                             setGuideId(draft.guideId);
-                            elapsedRef.current = Math.max(0, Date.now() - draft.startedAt);
+                            if (draft.course) {
+                              const c = draft.course;
+                              setCourseTab(c.courseTab);
+                              setCustomStrokes(c.customStrokes);
+                              setCustomTitle(c.customTitle);
+                              setGuideSize(c.guideSize);
+                              setGuideRot(c.guideRot);
+                              setGuideCenter(c.guideCenter);
+                              setPinPoints(c.pinPoints);
+                              setWalkableRoute(c.walkableRoute);
+                              setRouteLocked(c.routeLocked);
+                              navPrevDistRef.current = 0;
+                              lastSpokenStepRef.current = null;
+                            }
+                            walkStartedAtRef.current = draft.startedAt;
+                            elapsedRef.current =
+                              draft.elapsedMs ?? Math.max(0, Date.now() - draft.startedAt);
                             startRef.current = 0;
                             setMode('paused');
                             setDraft(null);
@@ -1673,21 +1764,31 @@ export default function App() {
 
                 {/* 3코스 후보 카드 비교 (그림·AI 추천 시) */}
                 {idle && candidates.length > 0 && (
-                  <div className="mb-2 flex gap-2 overflow-x-auto scroll-x pb-0.5">
+                  <div className="mb-2 grid grid-cols-3 gap-1.5 pb-0.5">
                     {candidates.map((c) => {
                       const active = c.id === selectedCandId;
                       return (
                         <div
                           key={c.id}
+                          role="button"
+                          tabIndex={0}
+                          aria-pressed={active}
                           onClick={() => selectCandidate(c)}
-                          className={`min-w-[152px] shrink-0 cursor-pointer rounded-2xl border p-2 transition ${
+                          onKeyDown={(e) => {
+                            if (e.target !== e.currentTarget) return;
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              selectCandidate(c);
+                            }
+                          }}
+                          className={`min-w-0 cursor-pointer rounded-2xl border p-2 transition ${
                             active
                               ? 'border-lime/70 bg-lime/[0.11]'
                               : 'border-white/10 bg-white/[0.03]'
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="truncate text-[11px] font-extrabold text-white">
+                          <div className="flex flex-wrap items-center justify-between gap-1">
+                            <span className="min-w-0 max-w-full truncate text-[11px] font-extrabold text-white">
                               {c.label}
                             </span>
                             {c.similarity !== undefined ? (
@@ -1766,16 +1867,16 @@ export default function App() {
                       >
                         {activeGuide ? `${activeGuide.emoji} ${activeGuide.name}` : '📐 도안 10종'}
                       </button>
-                      {hasShape && (
-                        <button
-                          onClick={handleFindSketchCandidates}
-                          disabled={candBusy}
-                          className="shrink-0 rounded-full bg-sky px-3 py-1.5 text-[11px] font-extrabold text-[#070A0F] disabled:opacity-60 active:scale-95"
-                        >
-                          {candBusy ? '찾는 중…' : '🔍 코스 3개 찾기'}
-                        </button>
-                      )}
                     </div>
+                    {hasShape && (
+                      <button
+                        onClick={handleFindSketchCandidates}
+                        disabled={candBusy}
+                        className="w-full rounded-full bg-sky px-3 py-2 text-[12px] font-extrabold text-[#070A0F] disabled:opacity-60 active:scale-95"
+                      >
+                        {candBusy ? '찾는 중…' : '🔍 코스 3개 찾기'}
+                      </button>
+                    )}
                     {hasShape && (
                       <div className="px-1 text-[10px] text-zinc-500">
                         ✥ 지도 위 핸들로 도안 이동 · ↻ 회전
@@ -2356,6 +2457,8 @@ export default function App() {
                     step={10}
                     display={`${guideSize} m`}
                     onChange={(v) => {
+                      // 직접 크기를 고르면 자동 맞추기를 끈다 (보정이 사용자의 값을 덮어쓰지 않도록)
+                      setAutoSizeToGoal(false);
                       setRouteLocked(false);
                       setGuideSize(v);
                     }}
@@ -2646,12 +2749,7 @@ export default function App() {
             </div>
           </div>
 
-          <button
-            onClick={() => setScreenLocked(false)}
-            className="rounded-full border border-lime/40 bg-lime/15 px-7 py-3.5 text-sm font-extrabold text-lime active:scale-95"
-          >
-            🔓 화면 잠금 해제
-          </button>
+          <HoldToUnlock onUnlock={() => setScreenLocked(false)} />
         </div>
       )}
 

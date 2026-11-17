@@ -1,4 +1,6 @@
 import type { Walk } from '../types';
+import type { LatLng, XY } from './geo';
+import type { WalkableRoute } from './routing';
 
 /**
  * 로컬 저장소: IndexedDB 우선, 막히면(사생활 모드 등) localStorage로 자동 대체.
@@ -114,6 +116,20 @@ export type Draft = {
   width: number;
   guideId: string | null;
   startedAt: number;
+  /** 일시정지 시간을 뺀 실제 경과 시간(ms). 없으면(구버전) startedAt으로 추정 */
+  elapsedMs?: number;
+  /** 이어서 걸을 계획 코스 (구버전 draft에는 없음) */
+  course?: {
+    courseTab: 'sketch' | 'ai' | 'pin' | 'free';
+    customStrokes: XY[][] | null;
+    customTitle: string;
+    guideSize: number;
+    guideRot: number;
+    guideCenter: LatLng | null;
+    pinPoints: LatLng[];
+    walkableRoute: WalkableRoute | null;
+    routeLocked: boolean;
+  };
 };
 
 export function saveDraft(draft: Draft) {
@@ -179,12 +195,13 @@ export function listSavedRoutes(): SavedRoute[] {
 export function saveFavoriteRoute(route: SavedRoute): SavedRoute[] {
   const list = listSavedRoutes().filter((r) => r.id !== route.id);
   list.unshift(route);
+  const next = list.slice(0, 60);
   try {
-    localStorage.setItem(SAVED_ROUTES_KEY, JSON.stringify(list.slice(0, 60)));
+    localStorage.setItem(SAVED_ROUTES_KEY, JSON.stringify(next));
   } catch {
     /* ignore */
   }
-  return list;
+  return next;
 }
 
 export function deleteSavedRoute(id: string): SavedRoute[] {
