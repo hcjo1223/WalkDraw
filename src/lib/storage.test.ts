@@ -157,8 +157,7 @@ describe('saved routes', () => {
     expect(s.listSavedRoutes().map((r) => r.id)).toEqual(['b']);
   });
 
-  // Known bug (issue #10): remove .fails once fixed.
-  it.fails('keeps at most 60, and the returned list matches what was stored', async () => {
+  it('keeps at most 60, and the returned list matches what was stored', async () => {
     const s = await load();
     let returned: ReturnType<typeof s.saveFavoriteRoute> = [];
     for (let i = 0; i < 61; i++) returned = s.saveFavoriteRoute(route(`r${i}`));
