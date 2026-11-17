@@ -323,8 +323,9 @@ export function formatPace(distanceM: number, durationMs: number): string {
   if (distanceM < 30 || durationMs < 5000) return '—';
   const secPerKm = durationMs / 1000 / (distanceM / 1000);
   if (!isFinite(secPerKm) || secPerKm > 3600) return '—';
-  const m = Math.floor(secPerKm / 60);
-  const s = Math.round(secPerKm % 60);
+  const total = Math.round(secPerKm);
+  const m = Math.floor(total / 60);
+  const s = total % 60;
   return `${m}'${String(s).padStart(2, '0')}"`;
 }
 
