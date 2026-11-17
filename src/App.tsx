@@ -202,6 +202,8 @@ export default function App() {
 
   const startRef = useRef(0);
   const elapsedRef = useRef(0);
+  /** 산책을 처음 시작한 시각 (일시정지·재개와 무관) */
+  const walkStartedAtRef = useRef(0);
   const autoRef = useRef<WalkController | null>(null);
   const toastTimer = useRef(0);
   const titleTimer = useRef(0);
@@ -370,6 +372,20 @@ export default function App() {
 
   /* ---------------- 임시 저장 ---------------- */
 
+  // 임시 저장에 함께 넣을 계획 코스 (interval을 다시 만들지 않도록 ref로 최신값 유지)
+  const courseRef = useRef<NonNullable<Draft['course']> | null>(null);
+  courseRef.current = {
+    courseTab,
+    customStrokes,
+    customTitle,
+    guideSize,
+    guideRot,
+    guideCenter,
+    pinPoints,
+    walkableRoute,
+    routeLocked,
+  };
+
   useEffect(() => {
     if (mode === 'idle') return;
     const id = window.setInterval(() => {
@@ -379,7 +395,9 @@ export default function App() {
           color,
           width,
           guideId,
-          startedAt: startRef.current || Date.now(),
+          startedAt: walkStartedAtRef.current || Date.now(),
+          elapsedMs: elapsedRef.current + (startRef.current ? Date.now() - startRef.current : 0),
+          course: courseRef.current ?? undefined,
         });
       }
     }, 4000);
@@ -865,6 +883,7 @@ export default function App() {
     setNow(Date.now());
     elapsedRef.current = 0;
     startRef.current = Date.now();
+    walkStartedAtRef.current = startRef.current;
     navPrevDistRef.current = 0;
     lastSpokenStepRef.current = null;
     lastKmSpokenRef.current = 0;
@@ -1647,7 +1666,23 @@ export default function App() {
                             setColor(draft.color);
                             setWidth(draft.width);
                             setGuideId(draft.guideId);
-                            elapsedRef.current = Math.max(0, Date.now() - draft.startedAt);
+                            if (draft.course) {
+                              const c = draft.course;
+                              setCourseTab(c.courseTab);
+                              setCustomStrokes(c.customStrokes);
+                              setCustomTitle(c.customTitle);
+                              setGuideSize(c.guideSize);
+                              setGuideRot(c.guideRot);
+                              setGuideCenter(c.guideCenter);
+                              setPinPoints(c.pinPoints);
+                              setWalkableRoute(c.walkableRoute);
+                              setRouteLocked(c.routeLocked);
+                              navPrevDistRef.current = 0;
+                              lastSpokenStepRef.current = null;
+                            }
+                            walkStartedAtRef.current = draft.startedAt;
+                            elapsedRef.current =
+                              draft.elapsedMs ?? Math.max(0, Date.now() - draft.startedAt);
                             startRef.current = 0;
                             setMode('paused');
                             setDraft(null);
