@@ -1673,21 +1673,31 @@ export default function App() {
 
                 {/* 3코스 후보 카드 비교 (그림·AI 추천 시) */}
                 {idle && candidates.length > 0 && (
-                  <div className="mb-2 flex gap-2 overflow-x-auto scroll-x pb-0.5">
+                  <div className="mb-2 grid grid-cols-3 gap-1.5 pb-0.5">
                     {candidates.map((c) => {
                       const active = c.id === selectedCandId;
                       return (
                         <div
                           key={c.id}
+                          role="button"
+                          tabIndex={0}
+                          aria-pressed={active}
                           onClick={() => selectCandidate(c)}
-                          className={`min-w-[152px] shrink-0 cursor-pointer rounded-2xl border p-2 transition ${
+                          onKeyDown={(e) => {
+                            if (e.target !== e.currentTarget) return;
+                            if (e.key === 'Enter' || e.key === ' ') {
+                              e.preventDefault();
+                              selectCandidate(c);
+                            }
+                          }}
+                          className={`min-w-0 cursor-pointer rounded-2xl border p-2 transition ${
                             active
                               ? 'border-lime/70 bg-lime/[0.11]'
                               : 'border-white/10 bg-white/[0.03]'
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="truncate text-[11px] font-extrabold text-white">
+                          <div className="flex flex-wrap items-center justify-between gap-1">
+                            <span className="min-w-0 max-w-full truncate text-[11px] font-extrabold text-white">
                               {c.label}
                             </span>
                             {c.similarity !== undefined ? (
@@ -1766,16 +1776,16 @@ export default function App() {
                       >
                         {activeGuide ? `${activeGuide.emoji} ${activeGuide.name}` : '📐 도안 10종'}
                       </button>
-                      {hasShape && (
-                        <button
-                          onClick={handleFindSketchCandidates}
-                          disabled={candBusy}
-                          className="shrink-0 rounded-full bg-sky px-3 py-1.5 text-[11px] font-extrabold text-[#070A0F] disabled:opacity-60 active:scale-95"
-                        >
-                          {candBusy ? '찾는 중…' : '🔍 코스 3개 찾기'}
-                        </button>
-                      )}
                     </div>
+                    {hasShape && (
+                      <button
+                        onClick={handleFindSketchCandidates}
+                        disabled={candBusy}
+                        className="w-full rounded-full bg-sky px-3 py-2 text-[12px] font-extrabold text-[#070A0F] disabled:opacity-60 active:scale-95"
+                      >
+                        {candBusy ? '찾는 중…' : '🔍 코스 3개 찾기'}
+                      </button>
+                    )}
                     {hasShape && (
                       <div className="px-1 text-[10px] text-zinc-500">
                         ✥ 지도 위 핸들로 도안 이동 · ↻ 회전
