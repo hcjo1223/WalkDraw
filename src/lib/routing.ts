@@ -294,6 +294,7 @@ async function fetchJsonWithTimeout(url: string, timeoutMs: number, outer?: Abor
   const ctrl = new AbortController();
   const timer = window.setTimeout(() => ctrl.abort(), timeoutMs);
   const onAbort = () => ctrl.abort();
+  if (outer?.aborted) ctrl.abort();
   outer?.addEventListener('abort', onAbort, { once: true });
   try {
     const res = await fetch(url, { signal: ctrl.signal });
