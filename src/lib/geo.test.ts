@@ -251,7 +251,7 @@ describe('formatters', () => {
     expect(formatPace(2000, 960_000)).toBe(`8'00"`);
   });
 
-  // Known bug (issue BUG_PACE): remove .fails once fixed.
+  // Known bug (issue #8): remove .fails once fixed.
   it.fails('formatPace never shows 60 seconds (rounds up to the next minute)', () => {
     // 359.6 s/km -> should read 6'00", not 5'60"
     expect(formatPace(1000, 359_600)).toBe(`6'00"`);

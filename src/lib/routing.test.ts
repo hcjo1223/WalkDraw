@@ -215,7 +215,7 @@ describe('fetchWalkableRoute (OSRM parsing)', () => {
     await expect(fetchWalkableRoute([[at(0, 0), at(0, 100)]], null, ctrl.signal)).rejects.toThrow();
   });
 
-  // Known bug (issue BUG_ABORT): remove .fails once fixed.
+  // Known bug (issue #9): remove .fails once fixed.
   it.fails('does not start a request when the signal is already aborted', async () => {
     const ctrl = new AbortController();
     ctrl.abort();
