@@ -494,6 +494,7 @@ export default function App() {
     return () => {
       window.clearTimeout(timer);
       ctrl.abort();
+      setRoutingBusy(false);
     };
   }, [
     courseTab,
@@ -535,6 +536,7 @@ export default function App() {
     return () => {
       window.clearTimeout(timer);
       ctrl.abort();
+      setRoutingBusy(false);
     };
   }, [courseTab, pinPoints, routeRefreshSeq]);
 
