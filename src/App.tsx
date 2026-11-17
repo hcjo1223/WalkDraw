@@ -614,6 +614,11 @@ export default function App() {
     (path: LatLng[], snap: SheetSnap = sheetSnap) => {
       if (path.length < 2) return;
       const topPad = mode === 'idle' ? 108 : 136;
+      // 데스크톱(lg 이상)에서는 시트가 왼쪽 패널이므로 아래 대신 왼쪽을 비운다
+      if (window.matchMedia('(min-width: 1024px)').matches) {
+        mapRef.current?.fit(path, { top: topPad, bottom: 96, left: 468 });
+        return;
+      }
       const bottomPad = snap === 'peek' ? 190 : snap === 'full' ? 460 : 370;
       mapRef.current?.fit(path, { top: topPad, bottom: bottomPad });
     },
@@ -1455,7 +1460,7 @@ export default function App() {
               ? 'none'
               : 'transform 0.24s cubic-bezier(0.22, 1, 0.36, 1)',
           }}
-          className={`sheet no-select absolute inset-x-0 z-30 flex flex-col rounded-t-[26px] px-4 pt-1.5 ${
+          className={`sheet no-select absolute inset-x-0 z-30 flex flex-col rounded-t-[26px] px-4 pt-1.5 lg:right-auto lg:left-4 lg:w-[420px] lg:rounded-b-[26px] lg:mb-4 ${
             showBottomTabs
               ? 'bottom-[calc(64px+env(safe-area-inset-bottom))] pb-2.5'
               : 'bottom-0 pb-[max(0.85rem,env(safe-area-inset-bottom))]'

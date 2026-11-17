@@ -28,7 +28,7 @@ export type MapHandle = {
   zoomOut: () => void;
   flyTo: (ll: LatLng, zoom?: number) => void;
   center: () => LatLng | null;
-  fit: (lls: LatLng[], pad?: { top?: number; bottom?: number }) => void;
+  fit: (lls: LatLng[], pad?: { top?: number; bottom?: number; left?: number }) => void;
 };
 
 export type CandidatePreview = {
@@ -216,7 +216,7 @@ const MapView = forwardRef<MapHandle, Props>(function MapView(
       const top = pad?.top ?? 80;
       const bottom = pad?.bottom ?? 80;
       map.fitBounds(b, {
-        paddingTopLeft: [28, top],
+        paddingTopLeft: [pad?.left ?? 28, top],
         paddingBottomRight: [28, bottom],
         maxZoom: 18,
       });
