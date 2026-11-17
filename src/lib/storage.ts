@@ -179,12 +179,13 @@ export function listSavedRoutes(): SavedRoute[] {
 export function saveFavoriteRoute(route: SavedRoute): SavedRoute[] {
   const list = listSavedRoutes().filter((r) => r.id !== route.id);
   list.unshift(route);
+  const next = list.slice(0, 60);
   try {
-    localStorage.setItem(SAVED_ROUTES_KEY, JSON.stringify(list.slice(0, 60)));
+    localStorage.setItem(SAVED_ROUTES_KEY, JSON.stringify(next));
   } catch {
     /* ignore */
   }
-  return list;
+  return next;
 }
 
 export function deleteSavedRoute(id: string): SavedRoute[] {
