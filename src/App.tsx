@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import CardView from './components/CardView';
 import MapView, { type CandidatePreview, type MapHandle } from './components/MapView';
+import HoldToUnlock from './components/HoldToUnlock';
 import PartnersView from './components/PartnersView';
 import RecordsView from './components/RecordsView';
 import SketchPad from './components/SketchPad';
@@ -2646,12 +2647,7 @@ export default function App() {
             </div>
           </div>
 
-          <button
-            onClick={() => setScreenLocked(false)}
-            className="rounded-full border border-lime/40 bg-lime/15 px-7 py-3.5 text-sm font-extrabold text-lime active:scale-95"
-          >
-            🔓 화면 잠금 해제
-          </button>
+          <HoldToUnlock onUnlock={() => setScreenLocked(false)} />
         </div>
       )}
 
