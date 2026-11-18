@@ -1,0 +1,16 @@
+{
+  "name": "walkdraw-api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "WalkDraw 로그인·동기화 API (Google ID 토큰 검증 + SQLite)",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/index.js"
+  },
+  "dependencies": {
+    "jose": "^6.1.0"
+  }
+}

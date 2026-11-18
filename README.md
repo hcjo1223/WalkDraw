@@ -2,7 +2,7 @@
 
 걸어서 그리는 GPS 드로잉 & 코스 러닝 앱. 손그림이나 도안을 실제 걸을 수 있는 도보 길로 바꾸고, 동행 파트너와 함께 걸은 뒤 포스터 카드 · 타임랩스 영상 · 월말정산 달력으로 남깁니다.
 
-> **산책온 · 발로그린그림 스타일의 올인원 GPS 아트 & 러닝** (백엔드·API 키 없이 100% 브라우저에서 동작)
+> **산책온 · 발로그린그림 스타일의 올인원 GPS 아트 & 러닝** (로그인 없이도 100% 브라우저에서 동작 · 로그인하면 자체 서버로 기기 간 동기화)
 
 **라이브:** https://hcjo1223.github.io/WalkDraw/
 
@@ -25,6 +25,25 @@
 - OSRM 보행자 경로 탐색 (`routing.openstreetmap.de/routed-foot`) + Nominatim 장소 검색 + 오프라인 직선 대체 안내
 - 포스터 · 월말정산 · 타임랩스 영상은 **HTML5 Canvas + `captureStream()` 직접 렌더링**
 - 로컬 저장: IndexedDB / `localStorage` (`walks`, `routes`, `partners`, `draft`)
+- 로그인 · 동기화: Google Identity Services + 자체 API 서버(`server/`: Node 22 · SQLite · jose)
+
+## 로그인 · 서버 (Google + 자체 API 서버)
+
+Google 로그인 버튼(Google Identity Services)으로 받은 ID 토큰을 **WalkDraw API 서버**([`server/`](server/), OCI `walkdraw.129.203.174.119.sslip.io`의 `/api`)가 Google 공개키로 검증하고 세션을 발급합니다. 로그인한 계정에 **산책 기록 · 찜한 코스 · 파트너 도감**을 동기화합니다.
+
+- **기기 우선(local-first)**: 앱은 항상 IndexedDB/localStorage를 먼저 쓰고, 로그인 중 변경은 대기열을 거쳐 서버로 올라갑니다. 오프라인이면 다음 동기화(앱 시작 · 온라인 복귀 · `지금 동기화`) 때 재시도합니다.
+- 첫 로그인 시 이 기기의 기존 기록이 계정으로 올라가고, 다른 기기에서 저장한 기록은 내려받습니다. 삭제는 서버에 묘비(`deleted`)로 남겨 다른 기기에도 반영됩니다.
+- 같은 기기에서 **다른 계정**으로 로그인하면 기록이 섞이지 않도록 기기 데이터를 새 계정 데이터로 교체합니다(이전 계정 데이터는 서버에 남아 있음).
+- 로그인하지 않아도 모든 기능은 예전처럼 기기 저장만으로 동작합니다.
+- 서버: Node 22 + 내장 SQLite, 의존성 `jose` 하나. 프론트와 같은 OCI 서버에서 Docker로 실행하고 Caddy가 `/api/*`를 넘겨줍니다. GitHub Pages 버전도 같은 API를 씁니다(CORS 허용).
+
+### 설정 (한 번만)
+
+1. **Google Cloud Console** → [사용자 인증 정보](https://console.cloud.google.com/apis/credentials) → OAuth 클라이언트 ID(**웹 애플리케이션**) 생성
+   - 승인된 JavaScript 원본: `https://walkdraw.129.203.174.119.sslip.io`, `https://hcjo1223.github.io`, `http://localhost:5173`, `http://localhost`
+2. **OCI 서버**: API 컨테이너 실행 + 프론트 재빌드 + Caddy `/api` 연결 — [`server/README.md`](server/README.md)의 "OCI 서버 배포" 그대로
+3. **GitHub** → 저장소 **Settings → Secrets and variables → Actions → Variables**에 `GOOGLE_CLIENT_ID` 등록 (Pages 빌드용)
+4. 로컬: `.env.example`을 `.env.local`로 복사하고 `VITE_GOOGLE_CLIENT_ID` 입력
 
 ## 로컬 실행
 
@@ -41,6 +60,7 @@ npm run build:single  # dist-single/index.html (단일 파일)
 ```
 .github/workflows/
   deploy.yml              main push 시 GitHub Pages 자동 빌드·배포
+server/                   로그인·동기화 API (Node 22 · node:sqlite · jose) — server/README.md
 src/
   App.tsx                 3탭 내비게이션(산책하기/나의 기록/파트너), 코스 모드, Eyes-Free HUD, 완료 피드백 모달
   components/
@@ -48,6 +68,7 @@ src/
     SketchPad.tsx         점선 격자 자유 스케치 패드 (사진 깔기 · 되돌리기 · 빠른 밑그림)
     RecordsView.tsx       달력 · 월말정산 포스터 · 경로 재생 · 통계/20주 히트맵/8배지 · 찜한 코스
     PartnersView.tsx      D~S급 20종 픽셀 파트너 도감 · 실루엣/해금/동행 설정
+    AccountSheet.tsx      헤더 로그인/프로필 버튼 · Google 로그인 & 내 계정 시트(동기화 상태 · 지금 동기화 · 로그아웃)
     CardView.tsx          포스터 스튜디오(배경/사진/스티커) · 타임랩스 재생 & 영상/PNG 저장
   lib/
     geo.ts                거리·투영·RDP 단순화·Catmull-Rom 스무딩·포맷터
@@ -58,4 +79,8 @@ src/
     poster.ts             포스터 캔버스 렌더러(테마 7종·사진 배경·스티커·진행률)
     simulate.ts           자동 걷기(rAF), 데모 루프 생성
     storage.ts            IndexedDB/localStorage(산책 기록·찜한 코스·파트너·임시저장)
+    auth.ts               Google 로그인(GIS 버튼 · 서버 토큰 검증 · 세션 복원)
+    api.ts                API 클라이언트(세션 토큰 · 401 처리, 미설정 시 기기 저장만)
+    sync.ts               동기화 엔진(대기열 · 전체 동기화 계획 · 파트너 병합 · 계정 전환)
+    cloud.ts              동기화 엔진 ↔ API 서버 어댑터
 ```

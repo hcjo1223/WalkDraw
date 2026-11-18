@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AccountSheet, { AccountButton } from './components/AccountSheet';
 import CardView from './components/CardView';
 import MapView, { type CandidatePreview, type MapHandle } from './components/MapView';
 import HoldToUnlock from './components/HoldToUnlock';
@@ -19,6 +20,9 @@ import {
   type WalkFeedback,
   type XY,
 } from './lib/geo';
+import { loadAuthUser, onServerSignOut, restoreSession, saveAuthUser, signOutGoogle, type AuthUser } from './lib/auth';
+import { cloudSync } from './lib/cloud';
+import { getSyncStatus, subscribeSyncStatus, type SyncStatus } from './lib/sync';
 import {
   GUIDES,
   guideById,
@@ -193,6 +197,10 @@ export default function App() {
   const [savedRoutes, setSavedRoutes] = useState<SavedRoute[]>([]);
   const [partnerState, setPartnerState] = useState<PartnerState>(() => loadPartnerState());
   const [toast, setToast] = useState<string | null>(null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(() => loadAuthUser());
+  const [showAccount, setShowAccount] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(() => getSyncStatus());
+  const announceSyncRef = useRef(false);
   const [now, setNow] = useState(() => Date.now());
   const [draft, setDraft] = useState<Draft | null>(null);
   const [autoWalking, setAutoWalking] = useState(false);
@@ -261,6 +269,7 @@ export default function App() {
         starterClaimed: true,
       };
       savePartnerState(next);
+      cloudSync.partnersChanged();
       return next;
     });
     showToast('🎁 첫 파트너 [산책코기]가 합류했어요! 지도 위에서 함께 걸어요.');
@@ -271,6 +280,7 @@ export default function App() {
       setPartnerState((prev) => {
         const next: PartnerState = { ...prev, activeId: id };
         savePartnerState(next);
+        cloudSync.partnersChanged();
         return next;
       });
       const p = partnerById(id);
@@ -789,6 +799,7 @@ export default function App() {
         isRealRoad: route.isRealRoad,
       };
       const list = saveFavoriteRoute(saved);
+      cloudSync.routeSaved(saved.id);
       setSavedRoutes(list);
       showToast(`🔖 [${title}] 코스를 찜했어요! [나의 기록 > 찜한 코스]에서 언제든 다시 걸을 수 있어요.`);
     },
@@ -1049,6 +1060,7 @@ export default function App() {
         starterClaimed: partnerState.starterClaimed,
       };
       savePartnerState(nextPartnerState);
+      cloudSync.partnersChanged();
       setPartnerState(nextPartnerState);
 
       const finalWalk: Walk = {
@@ -1058,6 +1070,7 @@ export default function App() {
       };
 
       await saveWalk(finalWalk);
+      cloudSync.walkSaved(finalWalk.id);
       clearDraft();
       setDraft(null);
       setFinishDraft(null);
@@ -1157,7 +1170,7 @@ export default function App() {
     walkRef.current = next;
     window.clearTimeout(titleTimer.current);
     titleTimer.current = window.setTimeout(() => {
-      saveWalk(next);
+      saveWalk(next).then(() => cloudSync.walkSaved(id));
       setWalks((list) => list.map((x) => (x.id === id ? next : x)));
     }, 500);
   }, []);
@@ -1226,6 +1239,82 @@ export default function App() {
     [candidates, selectedCandId],
   );
 
+  /* ---------------- 로그인 · 서버 동기화 ---------------- */
+
+  const runSync = useCallback(async () => {
+    const announce = announceSyncRef.current;
+    announceSyncRef.current = false;
+    try {
+      const r = await cloudSync.syncAll();
+      if (!r) return;
+      await refreshWalks();
+      setPartnerState(loadPartnerState());
+      if (announce) {
+        const parts = [
+          r.pulled > 0 ? `${r.pulled}개 불러옴` : '',
+          r.pushed > 0 ? `${r.pushed}개 백업` : '',
+        ].filter(Boolean);
+        showToast(parts.length ? `☁️ 동기화 완료 · ${parts.join(' · ')}` : '☁️ 기록이 서버와 동기화됐어요.');
+      }
+    } catch {
+      if (announce) showToast('☁️ 동기화에 실패했어요. 잠시 후 다시 시도할게요.');
+    }
+  }, [refreshWalks, showToast]);
+
+  useEffect(() => subscribeSyncStatus(setSyncStatus), []);
+
+  // 앱 시작: 저장된 서버 세션 복원 + 다른 곳에서 로그아웃되면 반영
+  useEffect(() => {
+    let alive = true;
+    restoreSession().then((u) => {
+      if (alive) setAuthUser(u);
+    });
+    const off = onServerSignOut(() => {
+      saveAuthUser(null);
+      setAuthUser(null);
+    });
+    return () => {
+      alive = false;
+      off();
+    };
+  }, []);
+
+  // 로그인 상태가 바뀌면 동기화 시작/중지
+  const cloudUserId = authUser?.cloud ? authUser.id : null;
+  useEffect(() => {
+    cloudSync.setUser(cloudUserId);
+    if (!cloudUserId) return;
+    runSync();
+    const onOnline = () => runSync();
+    window.addEventListener('online', onOnline);
+    return () => window.removeEventListener('online', onOnline);
+  }, [cloudUserId, runSync]);
+
+  const handleSignIn = useCallback(
+    (u: AuthUser) => {
+      saveAuthUser(u);
+      announceSyncRef.current = Boolean(u.cloud);
+      setAuthUser(u);
+      setShowAccount(false);
+      showToast(`👋 ${u.name}님, 환영해요!`);
+    },
+    [showToast],
+  );
+
+  const handleSignOut = useCallback(async () => {
+    // 아직 못 올린 변경이 있으면 먼저 올린다
+    try {
+      await cloudSync.flush();
+    } catch {
+      /* 오프라인 — 기기에는 그대로 남아 있음 */
+    }
+    cloudSync.setUser(null);
+    await signOutGoogle();
+    setAuthUser(null);
+    setShowAccount(false);
+    showToast('로그아웃했어요. 기록은 이 기기에 그대로 남아 있어요.');
+  }, [showToast]);
+
   const showWalkMap = appTab === 'walk' && view === 'map';
 
   return (
@@ -1274,6 +1363,7 @@ export default function App() {
               <span className="text-[12px] font-bold tracking-[0.16em] text-zinc-200">WALK DRAW</span>
               {rec && <span className="text-[10px] font-semibold text-rose">REC</span>}
               {paused && <span className="text-[10px] font-semibold text-amber">PAUSE</span>}
+              {idle && <AccountButton user={authUser} onClick={() => setShowAccount(true)} />}
               {activePartnerUrl && idle && (
                 <button
                   onClick={() => setAppTab('partners')}
@@ -2617,6 +2707,7 @@ export default function App() {
             }}
             onDeleteWalk={async (id) => {
               await deleteWalk(id);
+              cloudSync.walkDeleted(id);
               await refreshWalks();
               showToast('산책 기록을 삭제했어요.');
             }}
@@ -2638,6 +2729,7 @@ export default function App() {
             }}
             onDeleteSavedRoute={(id) => {
               setSavedRoutes(deleteSavedRoute(id));
+              cloudSync.routeDeleted(id);
               showToast('찜한 코스를 삭제했어요.');
             }}
             onToast={showToast}
@@ -2692,6 +2784,21 @@ export default function App() {
             );
           })}
         </nav>
+      )}
+
+      {/* Google 로그인 / 내 계정 시트 */}
+      {showAccount && (
+        <AccountSheet
+          user={authUser}
+          onClose={() => setShowAccount(false)}
+          onSignIn={handleSignIn}
+          onSignOut={handleSignOut}
+          syncStatus={syncStatus}
+          onSyncNow={() => {
+            announceSyncRef.current = true;
+            runSync();
+          }}
+        />
       )}
 
       {/* 자유 그림 스케치 패드 모달 */}
