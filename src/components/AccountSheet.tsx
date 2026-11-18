@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { isGoogleLoginConfigured, renderGoogleButton, type AuthUser } from '../lib/auth';
-import { isServerConfigured } from '../lib/supabase';
+import { isServerConfigured } from '../lib/api';
 import type { SyncStatus } from '../lib/sync';
 
 /** 헤더에 들어가는 작은 계정 버튼 (로그인 전: "로그인", 로그인 후: 프로필 사진) */

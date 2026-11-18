@@ -78,24 +78,17 @@ describe('auth', () => {
     expect(loadAuthUser()).toBeNull();
   });
 
-  it('maps a Supabase user to a profile', async () => {
-    const { userFromSupabase } = await import('./auth');
-    const u = userFromSupabase(
-      {
-        id: 'uuid-1',
-        email: 'a@example.com',
-        user_metadata: { full_name: '김산책', avatar_url: 'https://x/a.png' },
-      } as never,
-      7,
-    );
-    expect(u).toEqual({
-      id: 'uuid-1',
+  it('maps a server user to a profile', async () => {
+    const { userFromServer } = await import('./auth');
+    expect(userFromServer({ id: 3, email: 'a@example.com', name: '김산책', picture: null }, 7)).toEqual({
+      id: '3',
       name: '김산책',
       email: 'a@example.com',
-      picture: 'https://x/a.png',
+      picture: null,
       signedInAt: 7,
       cloud: true,
     });
+    expect(userFromServer({ id: 4, email: 'walker@example.com', name: '', picture: '' }).name).toBe('walker');
   });
 
   it('is not configured without a client id', async () => {

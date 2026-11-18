@@ -4,7 +4,7 @@ import { defineConfig } from 'vitest/config';
 export default defineConfig({
   test: {
     environment: 'node',
-    include: ['src/**/*.test.ts'],
+    include: ['src/**/*.test.ts', 'server/test/**/*.test.js'],
     coverage: {
       provider: 'v8',
       include: ['src/lib/geo.ts', 'src/lib/pace.ts', 'src/lib/guides.ts', 'src/lib/routing.ts', 'src/lib/storage.ts', 'src/lib/auth.ts', 'src/lib/sync.ts'],

@@ -1,0 +1,16 @@
+# /etc/caddy/Caddyfile 의 기존 walkdraw 블록을 이걸로 교체 (AIHF Web 블록은 그대로 둔다)
+walkdraw.129.203.174.119.sslip.io {
+	encode zstd gzip
+
+	# 로그인·동기화 API → walkdraw-api 컨테이너 (127.0.0.1:8787)
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	# 프론트엔드 (vite build 결과)
+	handle {
+		root * /opt/walkdraw/dist
+		try_files {path} /index.html
+		file_server
+	}
+}
