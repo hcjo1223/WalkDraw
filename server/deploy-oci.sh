@@ -3,6 +3,8 @@
 #
 #   사용법:  sudo GOOGLE_CLIENT_ID=<클라이언트 ID> bash /opt/walkdraw/server/deploy-oci.sh
 #            (클라이언트 ID 없이 실행하면 로그인 없이 프론트만 갱신)
+#            /etc/walkdraw/deploy.env 에 GOOGLE_CLIENT_ID=... 가 있으면 그 값을 쓴다
+#            (GitHub Actions 자동 배포는 이 방식 — server/setup-autodeploy.sh 참고)
 #
 # 하는 일
 #   1) /opt/walkdraw 최신 main 받기
@@ -16,6 +18,15 @@ APP_DIR=/opt/walkdraw
 DATA_DIR=/opt/walkdraw-data
 DOMAIN=walkdraw.129.203.174.119.sslip.io
 CADDYFILE=/etc/caddy/Caddyfile
+ENV_FILE=/etc/walkdraw/deploy.env
+LOCK_FILE=/run/walkdraw-deploy.lock
+
+# SSH 연결이 끊겨도(예: Actions 취소) 배포는 끝까지 진행
+trap '' HUP
+
+if [ -z "${GOOGLE_CLIENT_ID:-}" ] && [ -r "$ENV_FILE" ]; then
+  GOOGLE_CLIENT_ID="$(sed -n 's/^GOOGLE_CLIENT_ID=//p' "$ENV_FILE" | head -n1 | tr -d '[:space:]')"
+fi
 CLIENT_ID="${GOOGLE_CLIENT_ID:-}"
 
 say() { printf '\n\033[1;32m▶ %s\033[0m\n' "$*"; }
@@ -24,10 +35,20 @@ die() { printf '\n\033[1;31m✖ %s\033[0m\n' "$*" >&2; exit 1; }
 [ "$(id -u)" -eq 0 ] || die "sudo로 실행해 주세요."
 [ -d "$APP_DIR/.git" ] || die "$APP_DIR 에 저장소가 없어요."
 
-say "1/5 최신 코드 받기"
-git -C "$APP_DIR" checkout -q main
-git -C "$APP_DIR" pull -q --ff-only origin main || die "git pull 실패 — 서버에서 직접 고친 파일이 있는지 확인해 주세요 (git -C $APP_DIR status)."
-git -C "$APP_DIR" log --oneline -1
+if [ -z "${WALKDRAW_DEPLOY_STAGE:-}" ]; then
+  # 동시에 두 번 돌지 않게 (먼저 시작한 배포가 끝날 때까지 기다림). fd 9는 아래 exec 후에도 유지된다.
+  exec 9>"$LOCK_FILE"
+  flock 9
+
+  say "1/5 최신 코드 받기"
+  git -C "$APP_DIR" checkout -q main
+  git -C "$APP_DIR" pull -q --ff-only origin main || die "git pull 실패 — 서버에서 직접 고친 파일이 있는지 확인해 주세요 (git -C $APP_DIR status)."
+  git -C "$APP_DIR" log --oneline -1
+
+  # 방금 받은 최신 버전의 이 스크립트로 나머지 단계를 실행 (실행 중인 파일이 바뀌는 문제 방지)
+  export WALKDRAW_DEPLOY_STAGE=2 GOOGLE_CLIENT_ID="$CLIENT_ID"
+  exec bash "$APP_DIR/server/deploy-oci.sh"
+fi
 
 if [ -n "$CLIENT_ID" ]; then
   say "2/5 API 컨테이너 빌드·재시작"

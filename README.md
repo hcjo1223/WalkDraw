@@ -42,7 +42,7 @@ Google 로그인 버튼(Google Identity Services)으로 받은 ID 토큰을 **Wa
 
 1. **Google Cloud Console** → [사용자 인증 정보](https://console.cloud.google.com/apis/credentials) → OAuth 클라이언트 ID(**웹 애플리케이션**) 생성
    - 승인된 JavaScript 원본: `https://walkdraw.129.203.174.119.sslip.io`, `https://hcjo1223.github.io`, `http://localhost:5173`, `http://localhost`
-2. **OCI 서버**: API 컨테이너 실행 + 프론트 재빌드 + Caddy `/api` 연결 — [`server/README.md`](server/README.md)의 "OCI 서버 배포" 그대로
+2. **OCI 서버 자동 배포**: 서버에서 `sudo GOOGLE_CLIENT_ID=<ID> bash server/setup-autodeploy.sh` 한 번 → 출력된 `OCI_SSH_KEY`(Secret) · `OCI_HOST` · `OCI_KNOWN_HOSTS`(Variables) 등록. 이후 main 머지 시 GitHub Pages와 OCI에 함께 배포 — [`server/README.md`](server/README.md)
 3. **GitHub** → 저장소 **Settings → Secrets and variables → Actions → Variables**에 `GOOGLE_CLIENT_ID` 등록 (Pages 빌드용)
 4. 로컬: `.env.example`을 `.env.local`로 복사하고 `VITE_GOOGLE_CLIENT_ID` 입력
 
@@ -60,7 +60,7 @@ npm run build:single  # dist-single/index.html (단일 파일)
 
 ```
 .github/workflows/
-  deploy.yml              main push 시 GitHub Pages 자동 빌드·배포
+  deploy.yml              main push 시 테스트 → GitHub Pages + OCI 서버(SSH) 자동 배포
 server/                   로그인·동기화 API (Node 22 · node:sqlite · jose) — server/README.md
 src/
   App.tsx                 3탭 내비게이션(산책하기/나의 기록/파트너), 코스 모드, Eyes-Free HUD, 완료 피드백 모달
