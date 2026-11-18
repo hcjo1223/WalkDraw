@@ -15,6 +15,40 @@ WalkDraw 로그인·동기화 API. 의존성은 `jose`(Google 토큰 검증) 하
 | `PORT` / `HOST` | `8787` / `0.0.0.0` | |
 | `ALLOWED_ORIGINS` | `https://walkdraw.129.203.174.119.sslip.io,https://hcjo1223.github.io,http://localhost:5173` | CORS 허용 출처(쉼표 구분) |
 
+## 자동 배포 (main 머지 → GitHub Pages + OCI)
+
+`.github/workflows/deploy.yml`의 `deploy-oci` 잡이 테스트·빌드가 통과하면 SSH로 OCI 서버에 접속해 `deploy-oci.sh`를 실행합니다. `OCI_HOST` 변수가 없으면 이 잡은 건너뜁니다.
+
+**최초 1회 설정 (서버에서)**
+
+```bash
+cd /opt/walkdraw && sudo git pull --ff-only
+sudo GOOGLE_CLIENT_ID=<클라이언트 ID> bash server/setup-autodeploy.sh
+```
+
+출력된 값을 GitHub 저장소 **Settings → Secrets and variables → Actions**에 등록:
+
+| 종류 | 이름 | 값 |
+| --- | --- | --- |
+| Secret | `OCI_SSH_KEY` | 출력된 비밀 키 전체 (`-----BEGIN` ~ `END-----`) |
+| Variable | `OCI_HOST` | `129.203.174.119` |
+| Variable | `OCI_KNOWN_HOSTS` | 출력된 `129.203.174.119 ssh-ed25519 AAAA...` 한 줄 |
+| Variable | `GOOGLE_CLIENT_ID` | (Pages 빌드용, 이미 등록했다면 생략) |
+
+OCI 보안 목록(Security List)에서 22번 포트가 인터넷에 열려 있어야 합니다(OCI 기본값).
+
+**보안 설계**
+
+- 배포 전용 계정 `walkdraw-deploy` (비밀번호 잠김, 키 로그인만)
+- 배포 키는 `authorized_keys`의 `command=`로 **`deploy-oci.sh` 실행만** 가능 — 다른 명령을 보내도 무시되고, 셸·포트 포워딩·에이전트 포워딩 불가
+- sudoers는 `deploy-oci.sh` 하나만 root로 허용
+- `GOOGLE_CLIENT_ID`는 서버의 `/etc/walkdraw/deploy.env`(root 전용)에만 보관
+- Actions는 `OCI_KNOWN_HOSTS`로 서버 호스트 키를 엄격히 확인(중간자 공격 방지)
+- 주의: `deploy-oci.sh`는 저장소에 있으므로 **main에 머지할 수 있는 사람은 서버에서 root로 실행되는 내용을 바꿀 수 있습니다.** main 브랜치 보호를 켜 두는 것을 권장합니다.
+- 키를 바꾸려면 `setup-autodeploy.sh`를 다시 실행하고 Secret을 새 값으로 교체(이전 키는 즉시 무효)
+
+**배포 스크립트 안전장치**: `flock`으로 동시 실행 방지(순서대로 실행), SSH가 끊겨도 끝까지 진행(`trap '' HUP`), 코드를 받은 뒤 **새 버전 스크립트로 다시 실행**, Caddy 교체 시 백업·검증 실패 시 자동 복구.
+
 ## OCI 서버 배포 — 스크립트 한 번
 
 ```bash
