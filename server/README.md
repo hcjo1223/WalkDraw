@@ -15,7 +15,16 @@ WalkDraw 로그인·동기화 API. 의존성은 `jose`(Google 토큰 검증) 하
 | `PORT` / `HOST` | `8787` / `0.0.0.0` | |
 | `ALLOWED_ORIGINS` | `https://walkdraw.129.203.174.119.sslip.io,https://hcjo1223.github.io,http://localhost:5173` | CORS 허용 출처(쉼표 구분) |
 
-## OCI 서버 배포 (최초 1회)
+## OCI 서버 배포 — 스크립트 한 번
+
+```bash
+cd /opt/walkdraw && sudo git pull --ff-only
+sudo GOOGLE_CLIENT_ID=<클라이언트 ID> bash server/deploy-oci.sh
+```
+
+코드 받기 → API 컨테이너 재시작 → 프론트 테스트·빌드 → Caddy `/api` 연결(없을 때만, 백업 후 교체·검증 실패 시 자동 복구) → 헬스 체크까지 한 번에 합니다. 다시 실행해도 안전하고, 이후 갱신도 같은 명령입니다. 아래는 같은 내용을 손으로 하는 방법입니다.
+
+## OCI 서버 배포 (수동)
 
 ```bash
 cd /opt/walkdraw && sudo git pull
