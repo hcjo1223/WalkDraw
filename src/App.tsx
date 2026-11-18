@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import AccountSheet, { AccountButton } from './components/AccountSheet';
 import CardView from './components/CardView';
 import MapView, { type CandidatePreview, type MapHandle } from './components/MapView';
 import HoldToUnlock from './components/HoldToUnlock';
@@ -19,6 +20,7 @@ import {
   type WalkFeedback,
   type XY,
 } from './lib/geo';
+import { loadAuthUser, saveAuthUser, signOutGoogle, type AuthUser } from './lib/auth';
 import {
   GUIDES,
   guideById,
@@ -193,6 +195,8 @@ export default function App() {
   const [savedRoutes, setSavedRoutes] = useState<SavedRoute[]>([]);
   const [partnerState, setPartnerState] = useState<PartnerState>(() => loadPartnerState());
   const [toast, setToast] = useState<string | null>(null);
+  const [authUser, setAuthUser] = useState<AuthUser | null>(() => loadAuthUser());
+  const [showAccount, setShowAccount] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [draft, setDraft] = useState<Draft | null>(null);
   const [autoWalking, setAutoWalking] = useState(false);
@@ -1226,6 +1230,23 @@ export default function App() {
     [candidates, selectedCandId],
   );
 
+  const handleSignIn = useCallback(
+    (u: AuthUser) => {
+      saveAuthUser(u);
+      setAuthUser(u);
+      setShowAccount(false);
+      showToast(`👋 ${u.name}님, 환영해요!`);
+    },
+    [showToast],
+  );
+
+  const handleSignOut = useCallback(() => {
+    signOutGoogle();
+    setAuthUser(null);
+    setShowAccount(false);
+    showToast('로그아웃했어요.');
+  }, [showToast]);
+
   const showWalkMap = appTab === 'walk' && view === 'map';
 
   return (
@@ -1274,6 +1295,7 @@ export default function App() {
               <span className="text-[12px] font-bold tracking-[0.16em] text-zinc-200">WALK DRAW</span>
               {rec && <span className="text-[10px] font-semibold text-rose">REC</span>}
               {paused && <span className="text-[10px] font-semibold text-amber">PAUSE</span>}
+              {idle && <AccountButton user={authUser} onClick={() => setShowAccount(true)} />}
               {activePartnerUrl && idle && (
                 <button
                   onClick={() => setAppTab('partners')}
@@ -2692,6 +2714,16 @@ export default function App() {
             );
           })}
         </nav>
+      )}
+
+      {/* Google 로그인 / 내 계정 시트 */}
+      {showAccount && (
+        <AccountSheet
+          user={authUser}
+          onClose={() => setShowAccount(false)}
+          onSignIn={handleSignIn}
+          onSignOut={handleSignOut}
+        />
       )}
 
       {/* 자유 그림 스케치 패드 모달 */}

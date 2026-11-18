@@ -26,6 +26,15 @@
 - 포스터 · 월말정산 · 타임랩스 영상은 **HTML5 Canvas + `captureStream()` 직접 렌더링**
 - 로컬 저장: IndexedDB / `localStorage` (`walks`, `routes`, `partners`, `draft`)
 
+## Google 로그인 설정
+
+백엔드 없이 [Google Identity Services](https://developers.google.com/identity/gsi/web)로 로그인합니다. 로그인하면 이름 · 이메일 · 프로필 사진만 이 기기(`localStorage`)에 저장되고, 산책 기록은 지금처럼 기기에 남습니다. 클라이언트 ID가 없으면 로그인 버튼은 "설정 필요" 안내만 보여주고, 나머지 기능은 그대로 동작합니다.
+
+1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials) → **사용자 인증 정보 만들기 → OAuth 클라이언트 ID → 웹 애플리케이션**
+2. **승인된 JavaScript 원본**에 추가: `https://hcjo1223.github.io`, `http://localhost:5173`, `http://localhost` (리디렉션 URI는 필요 없음)
+3. 로컬: `.env.example`을 `.env.local`로 복사하고 `VITE_GOOGLE_CLIENT_ID=<클라이언트 ID>` 입력
+4. 배포: 저장소 **Settings → Secrets and variables → Actions → Variables**에 `GOOGLE_CLIENT_ID` 등록 (클라이언트 ID는 공개 값이라 Secret이 아닌 Variable로 충분)
+
 ## 로컬 실행
 
 ```bash
@@ -48,6 +57,7 @@ src/
     SketchPad.tsx         점선 격자 자유 스케치 패드 (사진 깔기 · 되돌리기 · 빠른 밑그림)
     RecordsView.tsx       달력 · 월말정산 포스터 · 경로 재생 · 통계/20주 히트맵/8배지 · 찜한 코스
     PartnersView.tsx      D~S급 20종 픽셀 파트너 도감 · 실루엣/해금/동행 설정
+    AccountSheet.tsx      헤더 로그인/프로필 버튼 · Google 로그인 & 내 계정(로그아웃) 시트
     CardView.tsx          포스터 스튜디오(배경/사진/스티커) · 타임랩스 재생 & 영상/PNG 저장
   lib/
     geo.ts                거리·투영·RDP 단순화·Catmull-Rom 스무딩·포맷터
@@ -58,4 +68,5 @@ src/
     poster.ts             포스터 캔버스 렌더러(테마 7종·사진 배경·스티커·진행률)
     simulate.ts           자동 걷기(rAF), 데모 루프 생성
     storage.ts            IndexedDB/localStorage(산책 기록·찜한 코스·파트너·임시저장)
+    auth.ts               Google 로그인(GIS 스크립트 로드 · ID 토큰 파싱 · 로그인 상태 저장)
 ```
