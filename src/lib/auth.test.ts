@@ -67,8 +67,8 @@ describe('auth', () => {
     expect(loadAuthUser()).toBeNull();
     const user = { id: '9', name: 'N', email: 'n@example.com', picture: null, signedInAt: 1 };
     saveAuthUser(user);
-    expect(loadAuthUser()).toEqual(user);
-    signOutGoogle();
+    expect(loadAuthUser()).toEqual({ ...user, cloud: false });
+    await signOutGoogle();
     expect(loadAuthUser()).toBeNull();
   });
 
@@ -76,6 +76,26 @@ describe('auth', () => {
     localStorage.setItem('walkdraw.auth.v1', '{not json');
     const { loadAuthUser } = await import('./auth');
     expect(loadAuthUser()).toBeNull();
+  });
+
+  it('maps a Supabase user to a profile', async () => {
+    const { userFromSupabase } = await import('./auth');
+    const u = userFromSupabase(
+      {
+        id: 'uuid-1',
+        email: 'a@example.com',
+        user_metadata: { full_name: '김산책', avatar_url: 'https://x/a.png' },
+      } as never,
+      7,
+    );
+    expect(u).toEqual({
+      id: 'uuid-1',
+      name: '김산책',
+      email: 'a@example.com',
+      picture: 'https://x/a.png',
+      signedInAt: 7,
+      cloud: true,
+    });
   });
 
   it('is not configured without a client id', async () => {

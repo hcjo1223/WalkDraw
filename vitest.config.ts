@@ -7,7 +7,7 @@ export default defineConfig({
     include: ['src/**/*.test.ts'],
     coverage: {
       provider: 'v8',
-      include: ['src/lib/geo.ts', 'src/lib/pace.ts', 'src/lib/guides.ts', 'src/lib/routing.ts', 'src/lib/storage.ts', 'src/lib/auth.ts'],
+      include: ['src/lib/geo.ts', 'src/lib/pace.ts', 'src/lib/guides.ts', 'src/lib/routing.ts', 'src/lib/storage.ts', 'src/lib/auth.ts', 'src/lib/sync.ts'],
       reporter: ['text', 'text-summary'],
     },
   },

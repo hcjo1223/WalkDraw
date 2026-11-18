@@ -246,3 +246,14 @@ export function savePartnerState(state: PartnerState): void {
     /* ignore */
   }
 }
+
+/** 찜한 코스 목록 통째로 교체 (서버 동기화용). 최신순 정렬 · 60개 제한 */
+export function replaceSavedRoutes(routes: SavedRoute[]): SavedRoute[] {
+  const next = [...routes].sort((a, b) => b.createdAt - a.createdAt).slice(0, 60);
+  try {
+    localStorage.setItem(SAVED_ROUTES_KEY, JSON.stringify(next));
+  } catch {
+    /* ignore */
+  }
+  return next;
+}

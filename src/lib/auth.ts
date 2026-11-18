@@ -1,20 +1,24 @@
 /**
- * Google 로그인 (Google Identity Services, 서버 없이 브라우저에서만 동작).
+ * Google 로그인 (Google Identity Services 버튼 + Supabase Auth).
  *
- * - `VITE_GOOGLE_CLIENT_ID` 환경 변수에 OAuth 2.0 웹 클라이언트 ID를 넣으면 활성화된다.
- * - 로그인하면 Google이 준 ID 토큰(JWT)에서 이름·이메일·프로필 사진만 꺼내 이 기기에 저장한다.
- * - 백엔드가 없으므로 토큰 서명 검증은 하지 않는다. 이 정보는 화면 표시용(내 계정 표시)으로만 쓰고,
- *   권한 판단에 쓰지 않는다. 산책 기록은 지금처럼 이 기기에만 남는다.
+ * - `VITE_GOOGLE_CLIENT_ID`에 OAuth 2.0 웹 클라이언트 ID를 넣으면 로그인 버튼이 활성화된다.
+ * - Supabase가 설정돼 있으면 Google ID 토큰을 `signInWithIdToken`으로 넘겨 **서버에서 검증**하고,
+ *   그 세션으로 산책 기록을 동기화한다(lib/sync.ts).
+ * - Supabase가 없으면 예전처럼 토큰에서 이름·이메일·사진만 읽어 이 기기에만 저장한다(표시용).
  */
+import type { Session, User } from '@supabase/supabase-js';
+import { supabase } from './supabase';
 
 export interface AuthUser {
-  /** Google 계정 고유 ID (JWT `sub`) */
+  /** 서버 연결 시 Supabase 사용자 ID, 아니면 Google 계정 ID (JWT `sub`) */
   id: string;
   name: string;
   email: string;
   picture: string | null;
   /** 로그인한 시각 (ms) */
   signedInAt: number;
+  /** 서버(Supabase) 세션으로 로그인했는지 여부 — true면 기록이 동기화된다 */
+  cloud?: boolean;
 }
 
 const LS_KEY = 'walkdraw.auth.v1';
@@ -75,6 +79,7 @@ export function loadAuthUser(): AuthUser | null {
       email: typeof u.email === 'string' ? u.email : '',
       picture: typeof u.picture === 'string' ? u.picture : null,
       signedInAt: typeof u.signedInAt === 'number' ? u.signedInAt : 0,
+      cloud: u.cloud === true,
     };
   } catch {
     return null;
@@ -88,6 +93,72 @@ export function saveAuthUser(user: AuthUser | null): void {
   } catch {
     /* 사생활 모드 등 — 이번 세션에서만 유지 */
   }
+}
+
+/** Supabase 사용자 → 화면용 AuthUser */
+export function userFromSupabase(user: User, now: number = Date.now()): AuthUser {
+  const meta = (user.user_metadata ?? {}) as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : '');
+  const email = user.email ?? str(meta.email);
+  const name = str(meta.full_name) || str(meta.name) || (email ? email.split('@')[0] : 'Google 사용자');
+  const picture = str(meta.avatar_url) || str(meta.picture) || null;
+  return { id: user.id, name, email, picture, signedInAt: now, cloud: true };
+}
+
+/** 앱 시작 시 저장된 서버 세션을 복원한다. 서버 미설정이면 기기 저장값을 그대로 쓴다. */
+export async function restoreSession(): Promise<AuthUser | null> {
+  if (!supabase) return loadAuthUser();
+  try {
+    const { data } = await supabase.auth.getSession();
+    const session: Session | null = data.session;
+    if (session?.user) {
+      const prev = loadAuthUser();
+      const u = userFromSupabase(session.user, prev?.id === session.user.id ? prev.signedInAt : Date.now());
+      saveAuthUser(u);
+      return u;
+    }
+  } catch {
+    /* 오프라인 — 기기 저장값 사용 */
+    return loadAuthUser();
+  }
+  // 서버 세션이 없으면(만료·다른 기기에서 로그아웃 등) 기기 저장값도 정리
+  const cached = loadAuthUser();
+  if (cached?.cloud) {
+    saveAuthUser(null);
+    return null;
+  }
+  return cached;
+}
+
+/** 서버 세션 변화(토큰 만료·로그아웃) 구독. 반환값은 구독 해제 함수 */
+export function onServerSignOut(cb: () => void): () => void {
+  if (!supabase) return () => {};
+  const { data } = supabase.auth.onAuthStateChange((event) => {
+    if (event === 'SIGNED_OUT') cb();
+  });
+  return () => data.subscription.unsubscribe();
+}
+
+function randomNonce(): string {
+  const bytes = new Uint8Array(16);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf), (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function friendlyAuthError(message: string): string {
+  if (/provider is not enabled|unsupported provider/i.test(message)) {
+    return '서버에서 Google 로그인이 아직 켜지지 않았어요. (Supabase > Authentication > Providers > Google)';
+  }
+  if (/audience/i.test(message)) {
+    return '서버에 등록된 Google 클라이언트 ID가 앱과 달라요. Supabase Google 설정을 확인해 주세요.';
+  }
+  if (/fetch|network/i.test(message)) return '서버에 연결하지 못했어요. 네트워크를 확인해 주세요.';
+  return `로그인에 실패했어요: ${message}`;
 }
 
 /* ---------- Google Identity Services 스크립트 ---------- */
@@ -110,6 +181,7 @@ interface GsiButtonOptions {
 interface GoogleAccountsId {
   initialize(config: {
     client_id: string;
+    nonce?: string;
     callback: (res: GsiCredentialResponse) => void;
     auto_select?: boolean;
     cancel_on_tap_outside?: boolean;
@@ -159,35 +231,54 @@ export function loadGoogleIdentity(): Promise<GoogleAccountsId> {
   return p;
 }
 
-let initializedFor: string | null = null;
-let credentialHandler: ((res: GsiCredentialResponse) => void) | null = null;
-
 /**
  * GIS를 불러와 초기화하고 `parent`에 Google 공식 로그인 버튼을 그린다.
  * 로그인에 성공하면 `onSignIn`이 사용자 정보와 함께 호출된다.
+ * 서버가 설정돼 있으면 ID 토큰을 Supabase로 보내 검증·세션 발급까지 마친 뒤 호출된다.
  */
 export async function renderGoogleButton(
   parent: HTMLElement,
   onSignIn: (user: AuthUser) => void,
   onError: (msg: string) => void,
   clientId: string = GOOGLE_CLIENT_ID,
+  onPending?: () => void,
 ): Promise<void> {
   const gsi = await loadGoogleIdentity();
-  credentialHandler = (res) => {
-    const user = parseGoogleCredential(res?.credential ?? '');
-    if (user) onSignIn(user);
-    else onError('Google 로그인 정보를 읽지 못했어요. 다시 시도해 주세요.');
-  };
-  if (initializedFor !== clientId) {
-    gsi.initialize({
-      client_id: clientId,
-      callback: (res) => credentialHandler?.(res),
-      auto_select: false,
-      cancel_on_tap_outside: true,
-      ux_mode: 'popup',
-    });
-    initializedFor = clientId;
-  }
+  // 재전송 공격 방지용 nonce: Google에는 해시를, Supabase에는 원문을 보낸다.
+  const rawNonce = supabase ? randomNonce() : null;
+  const hashedNonce = rawNonce ? await sha256Hex(rawNonce) : undefined;
+
+  gsi.initialize({
+    client_id: clientId,
+    nonce: hashedNonce,
+    auto_select: false,
+    cancel_on_tap_outside: true,
+    ux_mode: 'popup',
+    callback: async (res) => {
+      const token = res?.credential ?? '';
+      if (!supabase) {
+        const user = parseGoogleCredential(token);
+        if (user) onSignIn(user);
+        else onError('Google 로그인 정보를 읽지 못했어요. 다시 시도해 주세요.');
+        return;
+      }
+      onPending?.();
+      try {
+        const { data, error } = await supabase.auth.signInWithIdToken({
+          provider: 'google',
+          token,
+          nonce: rawNonce ?? undefined,
+        });
+        if (error || !data.user) {
+          onError(friendlyAuthError(error?.message ?? 'no-user'));
+          return;
+        }
+        onSignIn(userFromSupabase(data.user));
+      } catch (e) {
+        onError(friendlyAuthError(e instanceof Error ? e.message : String(e)));
+      }
+    },
+  });
   parent.replaceChildren();
   gsi.renderButton(parent, {
     type: 'standard',
@@ -201,9 +292,16 @@ export async function renderGoogleButton(
   });
 }
 
-/** 로그아웃: 저장된 정보를 지우고 다음 방문 때 자동 로그인되지 않게 한다. */
-export function signOutGoogle(): void {
+/** 로그아웃: 서버 세션과 저장된 정보를 지우고 다음 방문 때 자동 로그인되지 않게 한다. */
+export async function signOutGoogle(): Promise<void> {
   saveAuthUser(null);
+  if (supabase) {
+    try {
+      await supabase.auth.signOut();
+    } catch {
+      /* 오프라인이어도 로컬 세션은 지워진다 */
+    }
+  }
   try {
     window.google?.accounts?.id?.disableAutoSelect();
   } catch {

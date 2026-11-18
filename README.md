@@ -2,7 +2,7 @@
 
 걸어서 그리는 GPS 드로잉 & 코스 러닝 앱. 손그림이나 도안을 실제 걸을 수 있는 도보 길로 바꾸고, 동행 파트너와 함께 걸은 뒤 포스터 카드 · 타임랩스 영상 · 월말정산 달력으로 남깁니다.
 
-> **산책온 · 발로그린그림 스타일의 올인원 GPS 아트 & 러닝** (백엔드·API 키 없이 100% 브라우저에서 동작)
+> **산책온 · 발로그린그림 스타일의 올인원 GPS 아트 & 러닝** (로그인 없이도 100% 브라우저에서 동작 · 로그인하면 Supabase로 기기 간 동기화)
 
 **라이브:** https://hcjo1223.github.io/WalkDraw/
 
@@ -25,15 +25,35 @@
 - OSRM 보행자 경로 탐색 (`routing.openstreetmap.de/routed-foot`) + Nominatim 장소 검색 + 오프라인 직선 대체 안내
 - 포스터 · 월말정산 · 타임랩스 영상은 **HTML5 Canvas + `captureStream()` 직접 렌더링**
 - 로컬 저장: IndexedDB / `localStorage` (`walks`, `routes`, `partners`, `draft`)
+- 로그인 · 동기화: Google Identity Services + Supabase (Auth + Postgres, RLS)
 
-## Google 로그인 설정
+## 로그인 · 서버 (Google + Supabase)
 
-백엔드 없이 [Google Identity Services](https://developers.google.com/identity/gsi/web)로 로그인합니다. 로그인하면 이름 · 이메일 · 프로필 사진만 이 기기(`localStorage`)에 저장되고, 산책 기록은 지금처럼 기기에 남습니다. 클라이언트 ID가 없으면 로그인 버튼은 "설정 필요" 안내만 보여주고, 나머지 기능은 그대로 동작합니다.
+Google 로그인 버튼(Google Identity Services)으로 받은 ID 토큰을 **Supabase Auth**(`signInWithIdToken`)가 서버에서 검증하고, 로그인한 계정에 **산책 기록 · 찜한 코스 · 파트너 도감**을 동기화합니다.
 
-1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials) → **사용자 인증 정보 만들기 → OAuth 클라이언트 ID → 웹 애플리케이션**
-2. **승인된 JavaScript 원본**에 추가: `https://hcjo1223.github.io`, `http://localhost:5173`, `http://localhost` (리디렉션 URI는 필요 없음)
-3. 로컬: `.env.example`을 `.env.local`로 복사하고 `VITE_GOOGLE_CLIENT_ID=<클라이언트 ID>` 입력
-4. 배포: 저장소 **Settings → Secrets and variables → Actions → Variables**에 `GOOGLE_CLIENT_ID` 등록 (클라이언트 ID는 공개 값이라 Secret이 아닌 Variable로 충분)
+- **기기 우선(local-first)**: 앱은 항상 IndexedDB/localStorage를 먼저 쓰고, 로그인 중 변경은 대기열을 거쳐 서버로 올라갑니다. 오프라인이면 다음 동기화(앱 시작 · 온라인 복귀 · `지금 동기화`) 때 재시도합니다.
+- 첫 로그인 시 이 기기의 기존 기록이 계정으로 올라가고, 다른 기기에서 저장한 기록은 내려받습니다. 삭제는 서버에 묘비(`deleted`)로 남겨 다른 기기에도 반영됩니다.
+- 같은 기기에서 **다른 계정**으로 로그인하면 기록이 섞이지 않도록 기기 데이터를 새 계정 데이터로 교체합니다(이전 계정 데이터는 서버에 남아 있음).
+- 로그인하지 않아도 모든 기능은 예전처럼 기기 저장만으로 동작합니다.
+
+**서버 구성** — Supabase 프로젝트 `walkdraw` (서울 `ap-northeast-2`), 스키마: [`supabase/migrations/`](supabase/migrations/)
+
+| 테이블 | 내용 |
+| --- | --- |
+| `walks` | 산책 기록 (`user_id`, `id`, `data jsonb`, `deleted`) |
+| `saved_routes` | 찜한 코스 |
+| `partner_states` | 파트너 도감 (유저당 1행) |
+
+모든 테이블은 RLS로 **본인 행만** 읽고 쓸 수 있고, 익명(anon) 접근은 막혀 있습니다. Supabase URL과 publishable 키는 공개용 값이라 `.env`에 커밋되어 있습니다.
+
+### 설정 (한 번만)
+
+1. **Google Cloud Console** → [사용자 인증 정보](https://console.cloud.google.com/apis/credentials) → OAuth 클라이언트 ID(**웹 애플리케이션**) 생성
+   - 승인된 JavaScript 원본: `https://hcjo1223.github.io`, `http://localhost:5173`, `http://localhost`
+2. **Supabase 대시보드** → `walkdraw` 프로젝트 → **Authentication → Sign In / Providers → Google** 켜기
+   - *Client IDs*에 위 클라이언트 ID 입력 (Client Secret은 이 방식에선 필수 아님) → 저장
+3. **GitHub** → 저장소 **Settings → Secrets and variables → Actions → Variables**에 `GOOGLE_CLIENT_ID` 등록
+4. 로컬: `.env.example`을 `.env.local`로 복사하고 `VITE_GOOGLE_CLIENT_ID` 입력
 
 ## 로컬 실행
 
@@ -57,7 +77,7 @@ src/
     SketchPad.tsx         점선 격자 자유 스케치 패드 (사진 깔기 · 되돌리기 · 빠른 밑그림)
     RecordsView.tsx       달력 · 월말정산 포스터 · 경로 재생 · 통계/20주 히트맵/8배지 · 찜한 코스
     PartnersView.tsx      D~S급 20종 픽셀 파트너 도감 · 실루엣/해금/동행 설정
-    AccountSheet.tsx      헤더 로그인/프로필 버튼 · Google 로그인 & 내 계정(로그아웃) 시트
+    AccountSheet.tsx      헤더 로그인/프로필 버튼 · Google 로그인 & 내 계정 시트(동기화 상태 · 지금 동기화 · 로그아웃)
     CardView.tsx          포스터 스튜디오(배경/사진/스티커) · 타임랩스 재생 & 영상/PNG 저장
   lib/
     geo.ts                거리·투영·RDP 단순화·Catmull-Rom 스무딩·포맷터
@@ -68,5 +88,8 @@ src/
     poster.ts             포스터 캔버스 렌더러(테마 7종·사진 배경·스티커·진행률)
     simulate.ts           자동 걷기(rAF), 데모 루프 생성
     storage.ts            IndexedDB/localStorage(산책 기록·찜한 코스·파트너·임시저장)
-    auth.ts               Google 로그인(GIS 스크립트 로드 · ID 토큰 파싱 · 로그인 상태 저장)
+    auth.ts               Google 로그인(GIS 버튼 · nonce · Supabase signInWithIdToken · 세션 복원)
+    supabase.ts           Supabase 클라이언트 (미설정 시 null → 기기 저장만)
+    sync.ts               동기화 엔진(대기열 · 전체 동기화 계획 · 파트너 병합 · 계정 전환)
+    cloud.ts              동기화 엔진 ↔ Supabase 테이블 어댑터
 ```

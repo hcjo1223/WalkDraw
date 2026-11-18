@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { isGoogleLoginConfigured, renderGoogleButton, type AuthUser } from '../lib/auth';
+import { isServerConfigured } from '../lib/supabase';
+import type { SyncStatus } from '../lib/sync';
 
 /** 헤더에 들어가는 작은 계정 버튼 (로그인 전: "로그인", 로그인 후: 프로필 사진) */
 export function AccountButton({ user, onClick }: { user: AuthUser | null; onClick: () => void }) {
@@ -47,12 +49,50 @@ interface SheetProps {
   onClose: () => void;
   onSignIn: (user: AuthUser) => void;
   onSignOut: () => void;
+  syncStatus: SyncStatus;
+  onSyncNow: () => void;
+}
+
+function timeAgo(ts: number | null): string {
+  if (!ts) return '아직 없음';
+  const sec = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (sec < 60) return '방금';
+  if (sec < 3600) return `${Math.floor(sec / 60)}분 전`;
+  if (sec < 86400) return `${Math.floor(sec / 3600)}시간 전`;
+  return `${Math.floor(sec / 86400)}일 전`;
+}
+
+function SyncPanel({ status, onSyncNow }: { status: SyncStatus; onSyncNow: () => void }) {
+  const syncing = status.state === 'syncing';
+  let label: string;
+  let tone = 'text-zinc-400';
+  if (status.state === 'syncing') label = '동기화 중…';
+  else if (status.state === 'error') {
+    label = `동기화 실패 · ${status.message}`;
+    tone = 'text-rose';
+  } else if (status.state === 'idle') label = `마지막 동기화 · ${timeAgo(status.lastSyncedAt)}`;
+  else label = '동기화 꺼짐';
+  return (
+    <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl border border-sky/20 bg-sky/[0.06] px-3 py-2.5">
+      <div className="min-w-0">
+        <div className="text-[12px] font-bold text-sky">☁️ 서버 동기화 켜짐</div>
+        <div className={`truncate text-[11px] ${tone}`}>{label}</div>
+      </div>
+      <button
+        onClick={onSyncNow}
+        disabled={syncing}
+        className="shrink-0 rounded-full bg-white/10 px-3 py-1.5 text-[11px] font-semibold text-zinc-200 disabled:opacity-50"
+      >
+        {syncing ? '…' : '지금 동기화'}
+      </button>
+    </div>
+  );
 }
 
 /** 로그인 / 내 계정 바텀 시트 */
-export default function AccountSheet({ user, onClose, onSignIn, onSignOut }: SheetProps) {
+export default function AccountSheet({ user, onClose, onSignIn, onSignOut, syncStatus, onSyncNow }: SheetProps) {
   const btnRef = useRef<HTMLDivElement>(null);
-  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error' | 'signing-in'>('loading');
   const [error, setError] = useState<string | null>(null);
   const configured = isGoogleLoginConfigured();
 
@@ -66,7 +106,15 @@ export default function AccountSheet({ user, onClose, onSignIn, onSignOut }: She
         if (!cancelled) onSignIn(u);
       },
       (msg) => {
-        if (!cancelled) setError(msg);
+        if (cancelled) return;
+        setError(msg);
+        setStatus('ready');
+      },
+      undefined,
+      () => {
+        if (cancelled) return;
+        setError(null);
+        setStatus('signing-in');
       },
     )
       .then(() => {
@@ -115,9 +163,18 @@ export default function AccountSheet({ user, onClose, onSignIn, onSignOut }: She
                 <div className="mt-0.5 text-[10px] font-semibold text-lime">Google 계정으로 로그인됨</div>
               </div>
             </div>
-            <p className="mt-3 text-[11px] leading-relaxed text-zinc-500">
-              산책 기록 · 찜한 코스 · 파트너는 지금처럼 이 기기에 저장돼요.
-            </p>
+            {user.cloud ? (
+              <>
+                <SyncPanel status={syncStatus} onSyncNow={onSyncNow} />
+                <p className="mt-3 text-[11px] leading-relaxed text-zinc-500">
+                  산책 기록 · 찜한 코스 · 파트너가 계정에 저장돼요. 다른 기기에서 로그인해도 이어서 볼 수 있어요.
+                </p>
+              </>
+            ) : (
+              <p className="mt-3 text-[11px] leading-relaxed text-zinc-500">
+                산책 기록 · 찜한 코스 · 파트너는 이 기기에만 저장돼요.
+              </p>
+            )}
             <button
               onClick={onSignOut}
               className="mt-4 w-full rounded-2xl border border-rose/30 bg-rose/10 py-3 text-[13px] font-bold text-rose"
@@ -128,7 +185,9 @@ export default function AccountSheet({ user, onClose, onSignIn, onSignOut }: She
         ) : (
           <>
             <p className="mt-2 text-[12px] leading-relaxed text-zinc-400">
-              Google 계정으로 로그인하고 나만의 WalkDraw를 시작하세요.
+              {isServerConfigured
+                ? 'Google 계정으로 로그인하면 산책 기록 · 찜한 코스 · 파트너가 계정에 저장돼 어느 기기에서든 이어서 볼 수 있어요.'
+                : 'Google 계정으로 로그인하고 나만의 WalkDraw를 시작하세요.'}
             </p>
 
             {configured ? (
@@ -136,6 +195,9 @@ export default function AccountSheet({ user, onClose, onSignIn, onSignOut }: She
                 <div ref={btnRef} className="flex w-full justify-center" />
                 {status === 'loading' && (
                   <div className="text-[12px] text-zinc-500">Google 로그인 준비 중…</div>
+                )}
+                {status === 'signing-in' && (
+                  <div className="mt-2 text-[12px] text-sky">서버에 로그인하는 중…</div>
                 )}
                 {status === 'error' && (
                   <div className="text-center text-[12px] text-rose">
@@ -151,7 +213,8 @@ export default function AccountSheet({ user, onClose, onSignIn, onSignOut }: She
             )}
 
             <p className="mt-4 text-center text-[10px] leading-relaxed text-zinc-600">
-              로그인 없이도 모든 기능을 쓸 수 있어요. 이름 · 이메일 · 프로필 사진만 이 기기에 저장돼요.
+              로그인 없이도 모든 기능을 쓸 수 있어요.
+              {isServerConfigured ? ' 로그인하면 이 기기의 기존 기록도 계정으로 옮겨져요.' : ' 이름 · 이메일 · 프로필 사진만 이 기기에 저장돼요.'}
             </p>
           </>
         )}
