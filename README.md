@@ -49,11 +49,12 @@ Google 로그인 버튼(Google Identity Services)으로 받은 ID 토큰을 **Su
 ### 설정 (한 번만)
 
 1. **Google Cloud Console** → [사용자 인증 정보](https://console.cloud.google.com/apis/credentials) → OAuth 클라이언트 ID(**웹 애플리케이션**) 생성
-   - 승인된 JavaScript 원본: `https://hcjo1223.github.io`, `http://localhost:5173`, `http://localhost`
+   - 승인된 JavaScript 원본: `https://hcjo1223.github.io`, `https://walkdraw.129.203.174.119.sslip.io`(OCI 미러), `http://localhost:5173`, `http://localhost`
 2. **Supabase 대시보드** → `walkdraw` 프로젝트 → **Authentication → Sign In / Providers → Google** 켜기
    - *Client IDs*에 위 클라이언트 ID 입력 (Client Secret은 이 방식에선 필수 아님) → 저장
 3. **GitHub** → 저장소 **Settings → Secrets and variables → Actions → Variables**에 `GOOGLE_CLIENT_ID` 등록
 4. 로컬: `.env.example`을 `.env.local`로 복사하고 `VITE_GOOGLE_CLIENT_ID` 입력
+5. OCI 미러 서버: `/opt/walkdraw/.env.local`에 `VITE_GOOGLE_CLIENT_ID=...`를 넣은 뒤 다시 빌드
 
 ## 로컬 실행
 
